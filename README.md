@@ -2,7 +2,7 @@
 
 🚀 **Complete production-ready Supabase installation**
 
-[![Version](https://img.shields.io/badge/version-3.12-blue.svg)](https://github.com/Igor-Nersisyan/supabase-installer)
+[![Version](https://img.shields.io/badge/version-3.14-blue.svg)](https://github.com/Igor-Nersisyan/supabase-installer)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-20.04%20|%2022.04%20|%2024.04-orange.svg)](https://ubuntu.com/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
