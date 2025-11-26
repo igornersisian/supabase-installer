@@ -1,6 +1,7 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.12 - Complete Edition with 10GB Upload Support
+# Supabase Self-Hosted Production Installer v3.14 - Complete Edition with 10GB Upload Support
 # Features: Complete Docker configuration, latest Supabase version, log rotation, 10GB uploads
+# v3.14: Hardening script v3.3 with option 5 (Add external IP) and grep || true fix
 # Uses latest stable versions from Docker Hub
 set -euo pipefail
 
@@ -41,7 +42,7 @@ cat << 'HEADER'
    ╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
 HEADER
 
-echo -e "${GREEN}                   Self-Hosted Installer v3.12${NC}"
+echo -e "${GREEN}                   Self-Hosted Installer v3.14${NC}"
 echo -e "${GREEN}        Production Edition with 10GB File Upload Support${NC}"
 echo -e "${YELLOW}        Using latest stable Supabase versions${NC}"
 echo ""
@@ -134,7 +135,7 @@ echo -e "${GREEN}Checking other dependencies...${NC}"
 PACKAGES_TO_INSTALL=""
 
 # Check each package and add to install list if not present
-for pkg in git nginx certbot python3-certbot-nginx wget curl nano ufw python3-yaml jq logrotate; do
+for pkg in git nginx certbot python3-certbot-nginx wget curl nano ufw python3-yaml jq logrotate iptables-persistent; do
     if ! dpkg -l | grep -q "^ii  $pkg "; then
         PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL $pkg"
     else
@@ -145,7 +146,7 @@ done
 if [ ! -z "$PACKAGES_TO_INSTALL" ]; then
     echo -e "${YELLOW}⬇ Installing missing packages:${NC}$PACKAGES_TO_INSTALL"
     wait_for_apt_lock
-    apt-get install -y $PACKAGES_TO_INSTALL -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y $PACKAGES_TO_INSTALL -qq
     echo -e "${GREEN}  ✔ All packages installed successfully${NC}"
 fi
 
@@ -1422,90 +1423,368 @@ else
     echo -e "${YELLOW}⚠ Kong max body size may not be configured correctly${NC}"
 fi
 
-# Create DB hardening script
-echo -e "${YELLOW}Creating database hardening script...${NC}"
+# Create improved DB hardening script v3.2
+echo -e "${YELLOW}Creating database hardening script v3.2...${NC}"
 
 cat > /root/harden_supabase_db.sh << 'HARDEN_SCRIPT'
 #!/bin/bash
-# Supabase Database Hardening Script
-# Restricts PostgreSQL access to specific IP addresses
+# Supabase Database Hardening Script v3.3
+# 
+# CRITICAL: Both scenarios use iptables (NOT localhost binding)
+# 
+# Why? Because binding to 127.0.0.1 prevents Docker containers from connecting
+# via host.docker.internal - it only works with --network=host mode.
+# 
+# Based on official Docker documentation:
+# https://docs.docker.com/engine/network/firewall-iptables/
+#
+# Architecture:
+# - PostgreSQL always listens on 0.0.0.0:5432
+# - iptables DOCKER-USER chain controls who can connect
+# - Same Server: only Docker networks allowed
+# - Different Servers: Docker networks + specific external IP
+#
+# v3.3 changes:
+# - Added option 5: Add external IP to whitelist multiple servers
+# - Fixed grep with || true to prevent script exit on empty result
+#
+# v3.2 changes:
+# - CRITICAL: Added 192.168.0.0/16 to allowed Docker networks
+#   (Docker can use this range for bridge networks!)
+# - Added --ctdir ORIGINAL for safer packet matching
+# - Fixed clean_iptables with eval for proper argument handling
+#
+# v3.1 changes:
+# - Fixed clean_iptables to properly remove rules with -s (source IP)
+# - Uses iptables -S parsing instead of hardcoded rule patterns
 set -euo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
 
-echo -e "${YELLOW}========================================${NC}"
-echo -e "${YELLOW}  Supabase Database Hardening Script${NC}"
-echo -e "${YELLOW}========================================${NC}\n"
+SUPABASE_DIR="/opt/supabase-project"
+COMPOSE_FILE="$SUPABASE_DIR/docker-compose.yml"
+
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}${BOLD}  Supabase Database Hardening v3.2${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
 
 if [ "$EUID" -ne 0 ]; then 
-  echo -e "${RED}This script must be run as root${NC}"
-  exit 1
-fi
-
-echo -e "${YELLOW}This script will restrict PostgreSQL port 5432 to specific IP addresses.${NC}"
-echo -e "${YELLOW}This helps protect your database from unauthorized access.${NC}\n"
-
-# Step 1: Fix Docker/UFW compatibility
-echo -e "${YELLOW}Step 1: Configuring Docker/UFW compatibility...${NC}"
-
-if [ ! -f /etc/docker/daemon.json ]; then
-    echo '{"iptables": false}' > /etc/docker/daemon.json
-elif ! grep -q '"iptables"' /etc/docker/daemon.json; then
-    # Add iptables setting to existing daemon.json
-    sed -i 's/^{/{\n  "iptables": false,/' /etc/docker/daemon.json
-fi
-
-echo -e "${YELLOW}Restarting Docker to apply changes...${NC}"
-systemctl restart docker
-
-# Wait for Docker to be ready
-sleep 5
-
-echo -e "${GREEN}✔ Docker/UFW compatibility configured${NC}\n"
-
-# Step 2: Get trusted IP
-echo -e "${YELLOW}Step 2: Configure trusted IP addresses${NC}"
-echo -e "${YELLOW}Enter the IP address that should have access to PostgreSQL.${NC}"
-echo -e "${YELLOW}You can add multiple IPs by running this script again.${NC}"
-echo -e "${YELLOW}Examples: ${NC}"
-echo -e "  - Your office IP: 203.0.113.45"
-echo -e "  - Your VPN server: 198.51.100.22"
-echo -e "  - Another server: 192.0.2.15\n"
-
-read -p "Enter trusted IP address: " TRUSTED_IP
-
-# Validate IP format
-if ! [[ $TRUSTED_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-    echo -e "${RED}Invalid IP address format${NC}"
+    echo -e "${RED}Run as root${NC}"
     exit 1
 fi
 
-# Step 3: Configure firewall rules
-echo -e "\n${YELLOW}Step 3: Applying firewall rules...${NC}"
+# Check Supabase installation
+if [ ! -f "$COMPOSE_FILE" ]; then
+    echo -e "${RED}Supabase not found at $SUPABASE_DIR${NC}"
+    exit 1
+fi
 
-echo -e "${YELLOW}Removing general access rule if exists...${NC}"
-ufw delete allow 5432/tcp 2>/dev/null || true
+# Check Docker is running and DOCKER-USER chain exists
+if ! iptables -L DOCKER-USER -n >/dev/null 2>&1; then
+    echo -e "${RED}Docker not running or DOCKER-USER chain doesn't exist${NC}"
+    echo -e "${YELLOW}Start Docker first: systemctl start docker${NC}"
+    exit 1
+fi
 
-echo -e "${YELLOW}Adding access rule for $TRUSTED_IP...${NC}"
-ufw allow from $TRUSTED_IP to any port 5432 comment "PostgreSQL access for $TRUSTED_IP"
+SERVER_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "unknown")
+echo -e "${GREEN}Server IP: ${SERVER_IP}${NC}"
+echo ""
 
-echo -e "${GREEN}✔ Firewall rules applied${NC}\n"
+# Function to clean all our iptables rules
+clean_iptables() {
+    echo -e "${YELLOW}Cleaning existing firewall rules...${NC}"
+    
+    # Method: Delete ALL rules containing "ctorigdstport 5432" or "dport 5432"
+    # We parse iptables -S output and delete matching rules
+    # This handles rules with or without --ctdir ORIGINAL
+    
+    # Get all rules in DOCKER-USER chain and delete those related to port 5432
+    while true; do
+        # Find first rule with ctorigdstport 5432 or dport 5432
+        RULE=$(iptables -S DOCKER-USER 2>/dev/null | grep -E "ctorigdstport 5432|dport 5432" | head -1 || true)
+        if [ -z "$RULE" ]; then
+            break
+        fi
+        # Convert -A to -D for deletion
+        DELETE_RULE=$(echo "$RULE" | sed 's/^-A /-D /')
+        eval iptables $DELETE_RULE 2>/dev/null || break
+    done
+    
+    # Also remove ESTABLISHED,RELATED rule if it exists (we'll re-add it)
+    # Be careful: only remove OUR version (the global one without port specification)
+    iptables -D DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+}
 
-# Show current rules
-echo -e "${YELLOW}Current PostgreSQL access rules:${NC}"
-ufw status numbered | grep 5432 || echo "No rules found for port 5432"
+# Function to ensure docker-compose has port open on 0.0.0.0
+ensure_port_open() {
+    # Make backup
+    cp "$COMPOSE_FILE" "$COMPOSE_FILE.backup.$(date +%Y%m%d_%H%M%S)"
+    
+    # Ensure port is bound to 0.0.0.0 (not localhost)
+    # This is REQUIRED for both scenarios!
+    sed -i 's/- "127.0.0.1:5432:5432"/- "5432:5432"/' "$COMPOSE_FILE"
+    sed -i 's/- "0.0.0.0:5432:5432"/- "5432:5432"/' "$COMPOSE_FILE"
+}
 
-echo -e "\n${GREEN}========================================${NC}"
-echo -e "${GREEN}  Database Hardening Complete!${NC}"
-echo -e "${GREEN}========================================${NC}\n"
+# Function to add base iptables rules
+add_base_rules() {
+    # Install iptables-persistent for saving rules
+    echo -e "${YELLOW}Installing iptables-persistent...${NC}"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent >/dev/null 2>&1 || true
+    
+    # Rules are processed top to bottom
+    # We insert in REVERSE order because -I inserts at position 1
+    
+    # LAST: Drop everything else to port 5432
+    iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j DROP
+    
+    # Allow Docker networks (these MUST be allowed for container-to-container communication)
+    # Docker uses these ranges by design (from moby source code):
+    # - 172.17.0.0/16 through 172.31.0.0/16 (covered by 172.16.0.0/12)
+    # - 192.168.0.0/16 (Docker can also use this range!)
+    # - 10.0.0.0/8 (custom Docker networks)
+    # - 127.0.0.0/8 (localhost)
+    iptables -I DOCKER-USER -s 192.168.0.0/16 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
+    iptables -I DOCKER-USER -s 10.0.0.0/8 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
+    iptables -I DOCKER-USER -s 172.16.0.0/12 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
+    iptables -I DOCKER-USER -s 127.0.0.0/8 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
+    
+    # FIRST: Allow established connections (critical for response packets)
+    iptables -I DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+}
 
-echo -e "${YELLOW}PostgreSQL (port 5432) is now restricted to: $TRUSTED_IP${NC}"
-echo -e "${YELLOW}To add more IPs, run this script again.${NC}"
-echo -e "${YELLOW}To view all rules: ufw status numbered${NC}"
-echo -e "${YELLOW}To remove a rule: ufw delete [rule number]${NC}"
+# Function to save iptables rules
+save_rules() {
+    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    netfilter-persistent save 2>/dev/null || true
+}
+
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${YELLOW}${BOLD}  Select Setup${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "  ${GREEN}1)${NC} ${BOLD}Same Server${NC} - n8n and Supabase on this server"
+echo -e "     Allows only Docker containers to connect"
+echo ""
+echo -e "  ${GREEN}2)${NC} ${BOLD}Different Servers${NC} - n8n on another server"  
+echo -e "     Allows Docker containers + specific external IP"
+echo ""
+echo -e "  ${GREEN}3)${NC} ${BOLD}Reset to open${NC} - allow all connections"
+echo ""
+echo -e "  ${GREEN}4)${NC} ${BOLD}View current status${NC}"
+echo ""
+echo -e "  ${GREEN}5)${NC} ${BOLD}Add external IP${NC} - whitelist another server"
+echo ""
+echo -e "  ${GREEN}q)${NC} Quit"
+echo ""
+
+read -p "Select [1-5, q]: " OPTION
+
+case $OPTION in
+    1)
+        echo ""
+        echo -e "${CYAN}Configuring for Same Server (Docker-only access)...${NC}"
+        echo ""
+        
+        ensure_port_open
+        clean_iptables
+        add_base_rules
+        # No external IPs added - only Docker networks can connect
+        save_rules
+        
+        # Restart Supabase
+        echo -e "${YELLOW}Restarting Supabase...${NC}"
+        cd "$SUPABASE_DIR"
+        docker compose down db 2>/dev/null || docker-compose down db 2>/dev/null || true
+        docker compose up -d 2>/dev/null || docker-compose up -d
+        
+        echo ""
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${GREEN}${BOLD}  Done! Port 5432 restricted to Docker containers only${NC}"
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "${YELLOW}Firewall rules applied:${NC}"
+        echo -e "  ${GREEN}✔${NC} ESTABLISHED,RELATED - response packets"
+        echo -e "  ${GREEN}✔${NC} 127.0.0.0/8 - localhost"
+        echo -e "  ${GREEN}✔${NC} 172.16.0.0/12 - Docker networks"
+        echo -e "  ${GREEN}✔${NC} 10.0.0.0/8 - Docker custom networks"
+        echo -e "  ${GREEN}✔${NC} 192.168.0.0/16 - Docker bridge networks"
+        echo -e "  ${RED}✘${NC} All external IPs - BLOCKED"
+        echo ""
+        echo -e "${YELLOW}To connect n8n to Supabase PostgreSQL:${NC}"
+        echo ""
+        echo -e "  Host:     ${GREEN}host.docker.internal${NC}"
+        echo -e "  Port:     ${GREEN}5432${NC}"
+        echo -e "  Database: ${GREEN}postgres${NC}"
+        echo -e "  User:     ${GREEN}postgres${NC}"
+        echo -e "  Password: ${GREEN}<from /root/supabase-credentials.txt>${NC}"
+        echo -e "  SSL:      ${GREEN}Disable${NC}"
+        echo ""
+        echo -e "${YELLOW}Required in n8n docker-compose.yml:${NC}"
+        echo -e "  extra_hosts:"
+        echo -e "    - \"host.docker.internal:host-gateway\""
+        ;;
+        
+    2)
+        echo ""
+        echo -e "${CYAN}Configuring for Different Servers...${NC}"
+        echo ""
+        
+        read -p "Enter n8n server IP: " N8N_IP
+        
+        # Validate IP
+        if ! [[ $N8N_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            echo -e "${RED}Invalid IP format${NC}"
+            exit 1
+        fi
+        
+        ensure_port_open
+        clean_iptables
+        add_base_rules
+        
+        # Add external IP BEFORE the DROP rule (insert at position 2, after ESTABLISHED)
+        iptables -I DOCKER-USER 2 -s $N8N_IP -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
+        echo -e "  ${GREEN}✔${NC} Added: $N8N_IP"
+        
+        save_rules
+        
+        # Restart Supabase
+        echo -e "${YELLOW}Restarting Supabase...${NC}"
+        cd "$SUPABASE_DIR"
+        docker compose up -d 2>/dev/null || docker-compose up -d
+        
+        echo ""
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${GREEN}${BOLD}  Done! Port 5432 restricted to $N8N_IP + Docker${NC}"
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "${YELLOW}Firewall rules applied:${NC}"
+        echo -e "  ${GREEN}✔${NC} ESTABLISHED,RELATED - response packets"
+        echo -e "  ${GREEN}✔${NC} $N8N_IP - your n8n server"
+        echo -e "  ${GREEN}✔${NC} 127.0.0.0/8 - localhost"
+        echo -e "  ${GREEN}✔${NC} 172.16.0.0/12 - Docker networks"
+        echo -e "  ${GREEN}✔${NC} 10.0.0.0/8 - Docker custom networks"
+        echo -e "  ${GREEN}✔${NC} 192.168.0.0/16 - Docker bridge networks"
+        echo -e "  ${RED}✘${NC} All other external IPs - BLOCKED"
+        echo ""
+        echo -e "${YELLOW}To connect n8n to Supabase PostgreSQL:${NC}"
+        echo ""
+        echo -e "  Host:     ${GREEN}${SERVER_IP}${NC}"
+        echo -e "  Port:     ${GREEN}5432${NC}"
+        echo -e "  Database: ${GREEN}postgres${NC}"
+        echo -e "  User:     ${GREEN}postgres${NC}"
+        echo -e "  Password: ${GREEN}<from /root/supabase-credentials.txt>${NC}"
+        echo -e "  SSL:      ${GREEN}Disable${NC}"
+        echo ""
+        echo -e "${YELLOW}To add more IPs later:${NC}"
+        echo -e "  iptables -I DOCKER-USER 2 -s <IP> -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT"
+        echo -e "  iptables-save > /etc/iptables/rules.v4"
+        ;;
+        
+    3)
+        echo ""
+        echo -e "${CYAN}Resetting to open access...${NC}"
+        echo ""
+        
+        ensure_port_open
+        clean_iptables
+        save_rules
+        
+        # Restart
+        cd "$SUPABASE_DIR"
+        docker compose down db 2>/dev/null || docker-compose down db 2>/dev/null || true
+        docker compose up -d 2>/dev/null || docker-compose up -d
+        
+        echo -e "${GREEN}✔ Port 5432 is now open to all${NC}"
+        echo -e "${RED}⚠ WARNING: Database is accessible from internet!${NC}"
+        echo -e "${YELLOW}Use cloud firewall (Security Groups) for protection${NC}"
+        ;;
+        
+    4)
+        echo ""
+        echo -e "${CYAN}Current Status:${NC}"
+        echo ""
+        
+        # Check docker-compose binding
+        BINDING=$(grep -E "5432:5432" "$COMPOSE_FILE" | head -1 || echo "not found")
+        echo -e "${YELLOW}Docker Compose binding:${NC}"
+        echo "  $BINDING"
+        if echo "$BINDING" | grep -q "127.0.0.1"; then
+            echo -e "  ${RED}⚠ WARNING: Bound to localhost - containers can't connect!${NC}"
+        fi
+        echo ""
+        
+        # Check iptables
+        echo -e "${YELLOW}DOCKER-USER iptables rules:${NC}"
+        iptables -L DOCKER-USER -n -v 2>/dev/null | head -15 || echo "  Unable to read"
+        echo ""
+        
+        # Check if port is actually listening
+        echo -e "${YELLOW}Port 5432 listening:${NC}"
+        ss -tuln | grep 5432 || echo "  Not listening"
+        echo ""
+        
+        # Test connectivity hint
+        echo -e "${YELLOW}Quick test from another container:${NC}"
+        echo "  docker run --rm --add-host=host.docker.internal:host-gateway postgres:15 \\"
+        echo "    psql -h host.docker.internal -U postgres -c 'SELECT 1'"
+        ;;
+    
+    5)
+        echo ""
+        echo -e "${CYAN}Add External IP to Whitelist${NC}"
+        echo ""
+        
+        # Check if hardening is active
+        if ! iptables -S DOCKER-USER 2>/dev/null | grep -q "ctorigdstport 5432"; then
+            echo -e "${RED}Error: Hardening not active. Run option 1 or 2 first.${NC}"
+            exit 1
+        fi
+        
+        echo -e "${YELLOW}Current whitelisted external IPs:${NC}"
+        iptables -S DOCKER-USER 2>/dev/null | grep "ctorigdstport 5432" | grep -v DROP | grep -oP "(?<=-s )[0-9.]+" | grep -vE "^(127\.|172\.|10\.|192\.168\.)" || echo "  (none)"
+        echo ""
+        
+        read -p "Enter IP to add: " NEW_IP
+        
+        if ! [[ \$NEW_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            echo -e "${RED}Invalid IP format${NC}"
+            exit 1
+        fi
+        
+        # Check if already exists
+        if iptables -S DOCKER-USER 2>/dev/null | grep -q "\$NEW_IP"; then
+            echo -e "${YELLOW}IP \$NEW_IP is already whitelisted${NC}"
+            exit 0
+        fi
+        
+        iptables -I DOCKER-USER 2 -s \$NEW_IP -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
+        save_rules
+        
+        echo -e "${GREEN}✔ Added: \$NEW_IP${NC}"
+        echo ""
+        echo -e "${YELLOW}Current whitelist:${NC}"
+        iptables -S DOCKER-USER 2>/dev/null | grep "ctorigdstport 5432" | grep -v DROP | grep -oP "(?<=-s )[0-9.]+" | grep -vE "^(127\.|172\.|10\.|192\.168\.)" || echo "  (none)"
+        ;;
+        
+    q|Q)
+        echo "Exiting."
+        exit 0
+        ;;
+        
+    *)
+        echo -e "${RED}Invalid option${NC}"
+        exit 1
+        ;;
+esac
+
+echo ""
 HARDEN_SCRIPT
 
 chmod +x /root/harden_supabase_db.sh
@@ -1513,7 +1792,7 @@ chmod +x /root/harden_supabase_db.sh
 # Save credentials with restricted permissions
 cat > /root/supabase-credentials.txt << CREDS
 ========================================
-SUPABASE INSTALLATION COMPLETE v3.12
+SUPABASE INSTALLATION COMPLETE v3.14
 ========================================
 
 Main URL: https://$DOMAIN
@@ -1592,18 +1871,62 @@ Docker daemon configured with:
 This configuration is compatible with n8n and other services.
 
 ========================================
-POST-INSTALL SECURITY SCRIPT
+DATABASE HARDENING v3.2
 ========================================
 
-By default, the database port 5432 is open to all IPs.
-To restrict access to specific IP addresses, run:
+Run this script to secure PostgreSQL access:
 
   bash /root/harden_supabase_db.sh
 
-This script will:
-- Configure Docker/UFW compatibility
-- Restrict port 5432 to your trusted IPs only
-- Show you how to manage access rules
+Options:
+  1) Same Server - n8n and Supabase on same server
+     Uses host.docker.internal for connection
+  2) Different Servers - n8n on separate server
+     Whitelist specific external IP
+  3) Reset to open - allow all connections
+  4) View current status
+
+v3.2 improvements:
+✅ Added 192.168.0.0/16 to Docker network ranges
+✅ Safer packet matching with --ctdir ORIGINAL
+✅ Fixed rule cleanup for proper argument handling
+
+========================================
+N8N INTEGRATION
+========================================
+
+Same Server Setup:
+  1. Run: bash /root/harden_supabase_db.sh (select option 1)
+  2. In n8n, create PostgreSQL credential:
+     Host: host.docker.internal
+     Port: 5432
+     Database: postgres
+     User: postgres
+     Password: $POSTGRES_PASSWORD
+     SSL: Disable
+
+Different Server Setup:
+  1. Run: bash /root/harden_supabase_db.sh (select option 2)
+  2. Enter your n8n server's public IP
+  3. In n8n, create PostgreSQL credential:
+     Host: <this server's IP>
+     Port: 5432
+     Database: postgres
+     User: postgres
+     Password: $POSTGRES_PASSWORD
+     SSL: Disable
+
+IMPORTANT: n8n installer v3.24+ includes extra_hosts
+configuration automatically. If using older version,
+add to docker-compose.yml:
+
+  n8n-main:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  
+  n8n-worker:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 ========================================
 WEBHOOK CONFIGURATION
@@ -1687,6 +2010,9 @@ logrotate -f /etc/logrotate.d/docker-containers
 curl -I https://$DOMAIN/storage/v1/upload/resumable \\
   -H "Authorization: Bearer $ANON_KEY"
 
+# Test database hardening:
+bash /root/harden_supabase_db.sh
+
 ========================================
 CREDS
 
@@ -1708,6 +2034,7 @@ echo -e "${GREEN}✔ Edge Functions DNS fix applied - stable after restarts${NC}
 echo -e "${GREEN}✔ Kong timeout fix applied - supports 5-minute requests${NC}"
 echo -e "${GREEN}✔ Log rotation configured - prevents disk space issues${NC}"
 echo -e "${GREEN}✔ 10GB file upload support enabled via API/SDK${NC}"
+echo -e "${GREEN}✔ Database hardening script v3.2 installed${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${YELLOW}                     📋 NEXT STEPS${NC}"
