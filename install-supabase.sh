@@ -1,6 +1,7 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.14 - Complete Edition with 10GB Upload Support
+# Supabase Self-Hosted Production Installer v3.15 - Complete Edition with 10GB Upload Support
 # Features: Complete Docker configuration, latest Supabase version, log rotation, 10GB uploads
+# v3.15: Fixed FILE_SIZE_LIMIT - now uses integer values instead of strings
 # v3.14: Hardening script v3.3 with option 5 (Add external IP) and grep || true fix
 # Uses latest stable versions from Docker Hub
 set -euo pipefail
@@ -42,7 +43,7 @@ cat << 'HEADER'
    ╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
 HEADER
 
-echo -e "${GREEN}                   Self-Hosted Installer v3.14${NC}"
+echo -e "${GREEN}                   Self-Hosted Installer v3.15${NC}"
 echo -e "${GREEN}        Production Edition with 10GB File Upload Support${NC}"
 echo -e "${YELLOW}        Using latest stable Supabase versions${NC}"
 echo ""
@@ -343,25 +344,31 @@ try:
         modified = True
 
     # Add 10GB upload support to storage service
+    # CRITICAL FIX v3.15: Use INTEGER values, not strings!
     if 'services' in data and 'storage' in data['services']:
         if 'environment' not in data['services']['storage']:
             data['services']['storage']['environment'] = {}
         
+        # v3.15: All three size variables as integers (not strings!)
         storage_vars = {
-            'UPLOAD_FILE_SIZE_LIMIT': '10737418240',  # 10GB for TUS resumable uploads
-            'UPLOAD_FILE_SIZE_LIMIT_STANDARD': '1073741824',  # 1GB for standard uploads
-            'SERVER_KEEP_ALIVE_TIMEOUT': '7200',  # 2 hours
-            'SERVER_HEADERS_TIMEOUT': '7200',  # 2 hours
-            'UPLOAD_SIGNED_URL_EXPIRATION_TIME': '7200',  # 2 hours
+            'FILE_SIZE_LIMIT': 10737418240,              # 10GB - MAIN VARIABLE (was missing!)
+            'UPLOAD_FILE_SIZE_LIMIT': 10737418240,       # 10GB for TUS resumable uploads
+            'UPLOAD_FILE_SIZE_LIMIT_STANDARD': 10737418240,  # 10GB for standard uploads (was 1GB!)
+            'SERVER_KEEP_ALIVE_TIMEOUT': '7200',         # 2 hours
+            'SERVER_HEADERS_TIMEOUT': '7200',            # 2 hours
+            'UPLOAD_SIGNED_URL_EXPIRATION_TIME': '7200', # 2 hours
             'TUS_URL_PATH': '/storage/v1/upload/resumable',
-            'TUS_URL_HOST': domain,  # Use actual domain value
-            'STORAGE_BACKEND_URL': f'https://{domain}'  # Use actual domain value
+            'TUS_URL_HOST': domain,
+            'STORAGE_BACKEND_URL': f'https://{domain}'
         }
         
         for key, value in storage_vars.items():
             data['services']['storage']['environment'][key] = value
         
         print(f"✔ Storage service configured for 10GB uploads with domain: {domain}")
+        print(f"  FILE_SIZE_LIMIT: 10737418240 (integer)")
+        print(f"  UPLOAD_FILE_SIZE_LIMIT: 10737418240 (integer)")
+        print(f"  UPLOAD_FILE_SIZE_LIMIT_STANDARD: 10737418240 (integer)")
         modified = True
 
     # Add Kong configuration for large body size
@@ -1407,12 +1414,29 @@ else
     echo -e "${RED}✗ Nginx client_max_body_size is $NGINX_SIZE (expected 11G)${NC}"
 fi
 
-# Verify Storage container configuration
-STORAGE_LIMIT=$(docker exec supabase-storage printenv UPLOAD_FILE_SIZE_LIMIT 2>/dev/null)
-if [ "$STORAGE_LIMIT" = "10737418240" ]; then
-    echo -e "${GREEN}✔ Storage container configured for 10GB uploads${NC}"
+# Verify Storage container configuration - check all three variables
+echo -e "${YELLOW}Verifying Storage container file size limits...${NC}"
+
+FILE_SIZE_LIMIT=$(docker exec supabase-storage printenv FILE_SIZE_LIMIT 2>/dev/null)
+UPLOAD_FILE_SIZE_LIMIT=$(docker exec supabase-storage printenv UPLOAD_FILE_SIZE_LIMIT 2>/dev/null)
+UPLOAD_FILE_SIZE_LIMIT_STANDARD=$(docker exec supabase-storage printenv UPLOAD_FILE_SIZE_LIMIT_STANDARD 2>/dev/null)
+
+if [ "$FILE_SIZE_LIMIT" = "10737418240" ]; then
+    echo -e "${GREEN}✔ FILE_SIZE_LIMIT: 10737418240 (10GB)${NC}"
 else
-    echo -e "${RED}✗ Storage upload limit not set correctly (got: $STORAGE_LIMIT)${NC}"
+    echo -e "${RED}✗ FILE_SIZE_LIMIT: $FILE_SIZE_LIMIT (expected 10737418240)${NC}"
+fi
+
+if [ "$UPLOAD_FILE_SIZE_LIMIT" = "10737418240" ]; then
+    echo -e "${GREEN}✔ UPLOAD_FILE_SIZE_LIMIT: 10737418240 (10GB)${NC}"
+else
+    echo -e "${RED}✗ UPLOAD_FILE_SIZE_LIMIT: $UPLOAD_FILE_SIZE_LIMIT (expected 10737418240)${NC}"
+fi
+
+if [ "$UPLOAD_FILE_SIZE_LIMIT_STANDARD" = "10737418240" ]; then
+    echo -e "${GREEN}✔ UPLOAD_FILE_SIZE_LIMIT_STANDARD: 10737418240 (10GB)${NC}"
+else
+    echo -e "${RED}✗ UPLOAD_FILE_SIZE_LIMIT_STANDARD: $UPLOAD_FILE_SIZE_LIMIT_STANDARD (expected 10737418240)${NC}"
 fi
 
 # Verify Kong container configuration
@@ -1423,8 +1447,8 @@ else
     echo -e "${YELLOW}⚠ Kong max body size may not be configured correctly${NC}"
 fi
 
-# Create improved DB hardening script v3.2
-echo -e "${YELLOW}Creating database hardening script v3.2...${NC}"
+# Create improved DB hardening script v3.3
+echo -e "${YELLOW}Creating database hardening script v3.3...${NC}"
 
 cat > /root/harden_supabase_db.sh << 'HARDEN_SCRIPT'
 #!/bin/bash
@@ -1470,7 +1494,7 @@ SUPABASE_DIR="/opt/supabase-project"
 COMPOSE_FILE="$SUPABASE_DIR/docker-compose.yml"
 
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${CYAN}${BOLD}  Supabase Database Hardening v3.2${NC}"
+echo -e "${CYAN}${BOLD}  Supabase Database Hardening v3.3${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
@@ -1792,7 +1816,7 @@ chmod +x /root/harden_supabase_db.sh
 # Save credentials with restricted permissions
 cat > /root/supabase-credentials.txt << CREDS
 ========================================
-SUPABASE INSTALLATION COMPLETE v3.14
+SUPABASE INSTALLATION COMPLETE v3.15
 ========================================
 
 Main URL: https://$DOMAIN
@@ -1832,12 +1856,15 @@ This installation uses the LATEST Supabase versions:
 - Repository cloned from main branch
 
 ========================================
-10GB FILE UPLOAD SUPPORT
+10GB FILE UPLOAD SUPPORT (v3.15 FIX)
 ========================================
 
-✅ System configured for 10GB file uploads via API/SDK
-✅ TUS resumable uploads supported for reliability
-✅ Standard uploads support up to 1GB
+✅ FILE_SIZE_LIMIT: 10737418240 (10GB)
+✅ UPLOAD_FILE_SIZE_LIMIT: 10737418240 (10GB)
+✅ UPLOAD_FILE_SIZE_LIMIT_STANDARD: 10737418240 (10GB)
+
+v3.15 FIX: All three variables now set as INTEGER values
+(previous versions incorrectly used string values or missing FILE_SIZE_LIMIT)
 
 JavaScript SDK Example (resumable upload):
  const { data, error } = await supabase.storage
@@ -1857,6 +1884,9 @@ CURL Example (TUS resumable):
 Note: Supabase Studio UI file upload is limited to 6MB
 (architectural limitation of self-hosted version)
 
+Verify configuration:
+ docker exec supabase-storage printenv | grep -i size
+
 ========================================
 DOCKER DAEMON CONFIGURATION
 ========================================
@@ -1871,7 +1901,7 @@ Docker daemon configured with:
 This configuration is compatible with n8n and other services.
 
 ========================================
-DATABASE HARDENING v3.2
+DATABASE HARDENING v3.3
 ========================================
 
 Run this script to secure PostgreSQL access:
@@ -1885,11 +1915,7 @@ Options:
      Whitelist specific external IP
   3) Reset to open - allow all connections
   4) View current status
-
-v3.2 improvements:
-✅ Added 192.168.0.0/16 to Docker network ranges
-✅ Safer packet matching with --ctdir ORIGINAL
-✅ Fixed rule cleanup for proper argument handling
+  5) Add external IP - whitelist another server
 
 ========================================
 N8N INTEGRATION
@@ -1967,23 +1993,12 @@ PERFORMANCE OPTIMIZATIONS APPLIED
    - Keeps only 7 days of compressed logs
    - Prevents disk space issues
 
-5. 10GB File Upload Support:
-   - Storage service configured for 10GB TUS uploads
+5. 10GB File Upload Support (v3.15 FIX):
+   - FILE_SIZE_LIMIT set as integer (was missing!)
+   - All three size variables now integers (not strings)
    - Kong and Nginx configured for 11GB request bodies
    - Extended timeouts (2 hours) for slow connections
    - TUS resumable uploads for reliability
-
-========================================
-NOTE: ANALYTICS CONTAINER LOGS
-========================================
-
-The analytics container may show "connection refused" 
-messages for datadoghq.com in logs. This is a known issue
-with the Logflare telemetry system and does not affect
-functionality.
-
-To view logs without these messages:
-docker logs supabase-analytics -f 2>&1 | grep -v datadoghq
 
 ========================================
 QUICK COMMANDS
@@ -2010,6 +2025,9 @@ logrotate -f /etc/logrotate.d/docker-containers
 curl -I https://$DOMAIN/storage/v1/upload/resumable \\
   -H "Authorization: Bearer $ANON_KEY"
 
+# Verify file size limits:
+docker exec supabase-storage printenv | grep -i size
+
 # Test database hardening:
 bash /root/harden_supabase_db.sh
 
@@ -2033,8 +2051,8 @@ echo -e "${GREEN}✔ Analytics optimized - memory reduced by 65%${NC}"
 echo -e "${GREEN}✔ Edge Functions DNS fix applied - stable after restarts${NC}"
 echo -e "${GREEN}✔ Kong timeout fix applied - supports 5-minute requests${NC}"
 echo -e "${GREEN}✔ Log rotation configured - prevents disk space issues${NC}"
-echo -e "${GREEN}✔ 10GB file upload support enabled via API/SDK${NC}"
-echo -e "${GREEN}✔ Database hardening script v3.2 installed${NC}"
+echo -e "${GREEN}✔ 10GB file upload support enabled (v3.15 fix)${NC}"
+echo -e "${GREEN}✔ Database hardening script v3.3 installed${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${YELLOW}                     📋 NEXT STEPS${NC}"
@@ -2053,9 +2071,9 @@ echo -e "${GREEN}4. 🔧 Configure webhooks if using Edge Functions:${NC}"
 echo "   nano /opt/supabase-project/.env"
 echo "   (Add N8N_WEBHOOK_URL and restart containers)"
 echo ""
-echo -e "${GREEN}5. 📦 Test 10GB upload support:${NC}"
-echo "   Use Supabase JavaScript SDK or API endpoints"
-echo "   Note: Studio UI limited to 6MB (use SDK for large files)"
+echo -e "${GREEN}5. 📦 Verify 10GB upload support:${NC}"
+echo "   docker exec supabase-storage printenv | grep -i size"
+echo "   (Should show all three variables = 10737418240)"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
