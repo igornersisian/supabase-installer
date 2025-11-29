@@ -52,67 +52,46 @@ chmod +x install.sh
 
 # Run
 ./install.sh
+```
 
 You'll be prompted for:
+- Domain name (e.g., `supabase.example.com`)
+- Email address (for SSL)
 
-Domain name (e.g., supabase.example.com)
+## 📁 Post-Installation
 
-Email address (for SSL)
-
-📁 Post-Installation
-1. Credentials
-
+### 1. Credentials
 All passwords and API keys are saved in a secured file:
-
-code
-Bash
-download
-content_copy
-expand_less
+```bash
 cat /root/supabase-credentials.txt
+```
+*Save these securely and delete the file afterwards.*
 
-Save these securely and delete the file afterwards.
-
-2. Database Hardening (Critical)
-
+### 2. Database Hardening (Critical)
 By default, PostgreSQL (port 5432) is open. Run the hardening script to secure it:
 
-code
-Bash
-download
-content_copy
-expand_less
+```bash
 bash /root/harden_supabase_db.sh
+```
+**Options:**
+1. **Same Server:** Restricts access to internal Docker network only (for local n8n).
+2. **Different Server:** Whitelists specific external IPs.
+3. **Add IP:** Add more trusted servers later.
 
-Options:
-
-Same Server: Restricts access to internal Docker network only (for local n8n).
-
-Different Server: Whitelists specific external IPs.
-
-Add IP: Add more trusted servers later.
-
-🧩 Included Edge Functions
+## 🧩 Included Edge Functions
 
 The installer pre-deploys useful functions:
 
-n8n-proxy: A public entry point for n8n webhooks.
+1.  **`n8n-proxy`**: A public entry point for n8n webhooks.
+    *   URL: `https://your-domain.com/functions/v1/n8n-proxy`
+    *   Requires `N8N_WEBHOOK_URL` in `.env`.
+2.  **`webhook-endpoint-1/2/3`**: Protected endpoints requiring Auth Bearer token.
+3.  **`hello`**: Simple health check function.
 
-URL: https://your-domain.com/functions/v1/n8n-proxy
+## 🛠️ Management
 
-Requires N8N_WEBHOOK_URL in .env.
-
-webhook-endpoint-1/2/3: Protected endpoints requiring Auth Bearer token.
-
-hello: Simple health check function.
-
-🛠️ Management
-Service Control
-code
-Bash
-download
-content_copy
-expand_less
+### Service Control
+```bash
 cd /opt/supabase-project
 
 # Check status
@@ -123,54 +102,38 @@ docker compose down && docker compose up -d
 
 # Restart only functions (faster)
 docker compose restart functions
-Checking 10GB Upload Support
+```
 
+### Checking 10GB Upload Support
 You can verify the configuration works by checking the container environment:
-
-code
-Bash
-download
-content_copy
-expand_less
+```bash
 docker exec supabase-storage printenv | grep LIMIT
 # Should show:
 # FILE_SIZE_LIMIT=10737418240
 # UPLOAD_FILE_SIZE_LIMIT=10737418240
-Configuration
+```
 
-Edit /opt/supabase-project/.env to change:
+### Configuration
+Edit `/opt/supabase-project/.env` to change:
+- SMTP Settings (emails)
+- Webhook URLs
+- JWT Secrets
 
-SMTP Settings (emails)
-
-Webhook URLs
-
-JWT Secrets
-
-📊 Resource Usage
-
+## 📊 Resource Usage
 Typical consumption after optimization:
+- **Total RAM**: ~2.5 - 3.0 GB
+- **Disk**: ~2 GB (base installation)
 
-Total RAM: ~2.5 - 3.0 GB
+## 🐛 Troubleshooting
 
-Disk: ~2 GB (base installation)
-
-🐛 Troubleshooting
-
-"Realtime health check returns 404"
+**"Realtime health check returns 404"**
 This is normal. The health endpoint might be hidden, but WebSocket connections will work. Test with a real client.
 
-"Edge Functions timeout after 60s"
-This installer sets timeouts to 300s. If you see timeouts, check volumes/api/kong.yml.
+**"Edge Functions timeout after 60s"**
+This installer sets timeouts to 300s. If you see timeouts, check `volumes/api/kong.yml`.
 
-"Database connection failed from external IP"
-Check if you ran harden_supabase_db.sh. If so, add your IP using option 5.
+**"Database connection failed from external IP"**
+Check if you ran `harden_supabase_db.sh`. If so, add your IP using option 5.
 
-📄 License
-
+## 📄 License
 MIT
-
-code
-Code
-download
-content_copy
-expand_less
