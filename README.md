@@ -1,42 +1,35 @@
 # Supabase Self-Hosted Production Installer
 
-🚀 **Complete production-ready Supabase installation**
+🚀 **Complete production-ready Supabase installation script**
 
-[![Version](https://img.shields.io/badge/version-3.14-blue.svg)](https://github.com/Igor-Nersisyan/supabase-installer)
+[![Version](https://img.shields.io/badge/version-3.15-blue.svg)](https://github.com/Igor-Nersisyan/supabase-installer)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-20.04%20|%2022.04%20|%2024.04-orange.svg)](https://ubuntu.com/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ## 🎯 What is this?
 
-A battle-tested installer that deploys self-hosted Supabase with enterprise features and critical production fixes. Solves common issues like Edge Functions DNS failures and Kong 60-second timeout limits.
+A battle-tested installer that deploys self-hosted Supabase with enterprise features and critical production fixes.
 
-## ✨ Features
+**Why use this installer?**
+Standard Supabase guides often result in memory leaks, broken Edge Functions (DNS issues), and upload limits. This installer fixes all known issues out of the box.
 
-### Core Infrastructure
-- 🐘 **PostgreSQL 15** with connection pooler
-- 🚀 **Kong API Gateway** with fixed 5-minute timeouts
-- 🔐 **GoTrue Authentication** service
-- 📦 **Storage API** with 10GB file support
-- ⚡ **Realtime** websocket server
-- 🔧 **Edge Functions** with Deno runtime
-- 📊 **Vector logs aggregation**
-- 🎨 **Studio** database management UI
+## ✨ Key Features (v3.15)
 
-### Production Optimizations
-- 🔒 **SSL/HTTPS** with Let's Encrypt auto-renewal
-- 🛡️ **Nginx reverse proxy** with optimized configs
-- 🔥 **UFW firewall** auto-configuration
-- 📝 **Log rotation** (10MB per container, 7-day retention)
-- 🌐 **DNS configuration** for stable Edge Functions
-- 🔐 **Database hardening script** included
-- 💾 **10GB file uploads** via API/SDK (TUS resumable protocol)
-- 🔧 **Analytics optimization** - memory reduced by 65%
+### 📦 10GB File Upload Support (Fixed)
+- **Problem solved:** Standard configs use string values for size limits, which causes failures.
+- **Our fix:** Applies correct **Integer** values for `FILE_SIZE_LIMIT` and `UPLOAD_FILE_SIZE_LIMIT`.
+- **Full stack support:** Nginx (11GB), Kong (11GB), and Storage (10GB) are perfectly synced.
+- **TUS Protocol:** Full support for resumable uploads.
 
-### Custom Edge Functions
-Pre-configured Edge Functions for integrations:
-- `n8n-proxy` - Public webhook endpoint for n8n workflows
-- `webhook-endpoint-1/2/3` - Protected authenticated endpoints
-- `hello` - Test function to verify setup
+### ⚡ Performance & Stability
+- **Memory Optimized:** Analytics container optimized to use ~450MB instead of 1.5GB+.
+- **Edge Functions Stability:** Docker Daemon configured with `dns-opts=["ndots:0"]` to prevent DNS resolution failures after restarts.
+- **Kong Timeouts:** Increased to **5 minutes** (300s) to support long-running AI/n8n workflows (default is 60s).
+
+### 🛡️ Enterprise Security
+- **Database Hardening (v3.3):** Includes a script to whitelist IPs or restrict access to Docker-only.
+- **Auto SSL:** Let's Encrypt certificate with auto-renewal.
+- **Log Rotation:** Docker logs limited to 10MB/file to prevent disk overflow.
 
 ## 📋 Requirements
 
@@ -44,331 +37,140 @@ Pre-configured Edge Functions for integrations:
 - **RAM**: Minimum 3GB (4GB+ recommended)
 - **CPU**: 2+ cores
 - **Storage**: 20GB+ free space
-- **Network**:
-  - Root access
-  - Public IP address
-  - Domain name with A record pointing to server
-  - Ports: 80, 443, 5432 (PostgreSQL)
+- **Ports**: 80, 443, 5432 (PostgreSQL)
 
 ## 🚀 Quick Install
 
+Run as root:
+
 ```bash
 # Download installer
-wget https://raw.githubusercontent.com/Igor-Nersisyan/supabase-installer/main/install-supabase.sh
+wget https://raw.githubusercontent.com/Igor-Nersisyan/supabase-installer/main/install.sh
 
 # Make executable
-chmod +x install-supabase.sh
+chmod +x install.sh
 
-# Run as root
-sudo ./install-supabase.sh
-```
+# Run
+./install.sh
 
 You'll be prompted for:
-- Domain name (e.g., `supabase.example.com`)
-- Email address (for SSL certificates)
 
-## 📁 Installation Structure
+Domain name (e.g., supabase.example.com)
 
-```
-/opt/supabase-project/
-├── docker-compose.yml       # Container orchestration
-├── .env                     # All passwords & configuration
-├── volumes/
-│   ├── api/                # Kong API gateway config
-│   │   └── kong.yml        # Routes and timeouts
-│   ├── db/                 # PostgreSQL data
-│   │   ├── data/           # Database files
-│   │   └── init/           # Initialization scripts
-│   ├── functions/          # Edge Functions
-│   │   ├── main/           # Router function
-│   │   ├── n8n-proxy/      # Public webhook
-│   │   ├── webhook-endpoint-1/2/3/  # Protected endpoints
-│   │   └── _shared/        # Shared modules
-│   ├── logs/               # Vector log config
-│   └── storage/            # File storage
+Email address (for SSL)
 
-/root/
-├── supabase-credentials.txt     # All passwords & keys
-└── harden_supabase_db.sh       # Database security script
-```
+📁 Post-Installation
+1. Credentials
 
-## 🛠️ Management Commands
+All passwords and API keys are saved in a secured file:
 
-### Service Control
+code
+Bash
+download
+content_copy
+expand_less
+cat /root/supabase-credentials.txt
 
-```bash
-# View all services status
-cd /opt/supabase-project && docker compose ps
+Save these securely and delete the file afterwards.
 
-# Restart all services
-cd /opt/supabase-project && docker compose restart
+2. Database Hardening (Critical)
 
-# Stop everything
-cd /opt/supabase-project && docker compose down
+By default, PostgreSQL (port 5432) is open. Run the hardening script to secure it:
 
-# Start everything
-cd /opt/supabase-project && docker compose up -d
-
-# View logs for specific service
-docker logs supabase-edge-functions --tail 50
-docker logs supabase-kong --tail 50
-docker logs supabase-db --tail 50
-```
-
-## 📦 10GB File Upload Support
-
-The installer configures full 10GB upload support:
-- **Storage service**: 10GB for TUS resumable uploads
-- **Kong gateway**: 11GB request body limit
-- **Nginx proxy**: 11GB client body size
-- **Extended timeouts**: 2 hours for slow connections
-
-**Note**: Studio UI limited to 6MB uploads (use SDK/API for large files)
-
-
-### Edge Functions Management
-
-```bash
-# Restart only Edge Functions (faster)
-cd /opt/supabase-project
-docker compose restart functions
-
-# Full restart if functions don't update
-docker compose down && docker compose up -d
-
-# Check functions logs
-docker logs supabase-edge-functions --tail 50 -f
-
-# Test public function
-curl https://your-domain.com/functions/v1/hello
-```
-
-### Database Management
-
-```bash
-# Connect to PostgreSQL
-docker exec -it supabase-db psql -U postgres
-
-# Backup database
-docker exec supabase-db pg_dump -U postgres > backup.sql
-
-# Check connections
-docker exec supabase-db psql -U postgres -c "SELECT count(*) FROM pg_stat_activity;"
-```
-
-### Log Management
-
-```bash
-# Check log sizes
-du -sh /var/lib/docker/containers/*/*-json.log | sort -h
-
-# Force log rotation
-logrotate -f /etc/logrotate.d/docker-containers
-
-# View aggregated logs
-docker logs supabase-vector --tail 100
-```
-
-## 🔧 Configuration
-
-### Access Credentials
-All credentials saved in `/root/supabase-credentials.txt`:
-- Studio URL: `https://your-domain.com/studio`
-- Database connection details
-- API keys (anon & service)
-- Dashboard password
-
-### Environment Variables
-Configuration in `/opt/supabase-project/.env`:
-- Database passwords
-- JWT secrets
-- API URLs
-- SMTP settings
-- Webhook URLs for Edge Functions
-
-### Kong Timeouts
-Pre-configured in `volumes/api/kong.yml`:
-- Functions: 5 minutes (300 seconds)
-- Storage: 10 minutes
-- Realtime: 1 hour
-- Default: 60 seconds
-
-### Edge Functions Setup
-
-To configure webhook endpoints, edit `.env`:
-
-```bash
-# n8n webhook (public)
-N8N_WEBHOOK_URL=https://your-n8n.com/webhook/xxx
-N8N_BASIC_AUTH_HEADER=Basic base64_encoded_credentials
-
-# Protected endpoints
-ENDPOINT_1_WEBHOOK_URL=https://your-service.com/webhook
-ENDPOINT_1_AUTH_HEADER=Bearer your-token
-```
-
-Then restart functions:
-```bash
-cd /opt/supabase-project
-docker compose restart functions
-```
-
-## 🐛 Troubleshooting
-
-### Edge Functions not working
-
-```bash
-# Check DNS configuration
-docker exec supabase-edge-functions nslookup google.com
-
-# Verify functions are loaded
-docker logs supabase-edge-functions --tail 100 | grep "Booted"
-
-# Test function directly
-curl -i https://your-domain.com/functions/v1/hello
-```
-
-### Kong timeout issues
-
-```bash
-# Verify timeout settings
-docker exec supabase-kong cat /var/run/kong/kong.yml | grep timeout
-
-# Check Kong routes
-curl http://localhost:8001/services/functions-v1
-```
-
-### Database connection issues
-
-```bash
-# Test pooler connection
-psql postgresql://postgres.postgres:password@your-domain.com:5432/postgres
-
-# Check if port 5432 is open
-netstat -tulpn | grep 5432
-```
-
-### High memory usage
-
-```bash
-# Check container resources
-docker stats --no-stream
-
-# Restart heavy services
-docker compose restart storage
-docker compose restart functions
-```
-
-### Studio not loading
-
-```bash
-# Check if all services are healthy
-cd /opt/supabase-project
-docker compose ps
-
-# Restart Studio
-docker compose restart studio
-```
-
-## 📊 Resource Usage
-
-Typical consumption with moderate load:
-- **RAM**: 2.5-3.5GB total
-  - PostgreSQL: 500MB-1GB
-  - Edge Functions: 300-500MB
-  - Kong: 200-300MB
-  - Others: 100-200MB each
-- **CPU**: 10-30% average
-- **Disk**: 2-5GB base + your data
-- **Network**: Varies by usage
-
-## 🔒 Security Hardening
-
-### Restrict Database Access
-
-After installation, run the hardening script:
-
-```bash
-# Run hardening script
+code
+Bash
+download
+content_copy
+expand_less
 bash /root/harden_supabase_db.sh
 
-# Enter trusted IP addresses when prompted
-# This restricts PostgreSQL port 5432 to specific IPs only
-```
+Options:
 
-### Additional Security Steps
+Same Server: Restricts access to internal Docker network only (for local n8n).
 
-```bash
-# Remove credentials file after saving elsewhere
-rm /root/supabase-credentials.txt
+Different Server: Whitelists specific external IPs.
 
-# Enable fail2ban for SSH protection
-apt install fail2ban -y
+Add IP: Add more trusted servers later.
 
-# Disable root SSH (use sudo user instead)
-sed -i 's/PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
-systemctl restart ssh
-```
+🧩 Included Edge Functions
 
-## 🔄 Updates
+The installer pre-deploys useful functions:
 
-### Update Supabase Components
+n8n-proxy: A public entry point for n8n webhooks.
 
-```bash
+URL: https://your-domain.com/functions/v1/n8n-proxy
+
+Requires N8N_WEBHOOK_URL in .env.
+
+webhook-endpoint-1/2/3: Protected endpoints requiring Auth Bearer token.
+
+hello: Simple health check function.
+
+🛠️ Management
+Service Control
+code
+Bash
+download
+content_copy
+expand_less
 cd /opt/supabase-project
-docker compose pull
-docker compose down
-docker compose up -d
-```
 
-### Update Installer
+# Check status
+docker compose ps
 
-```bash
-wget https://raw.githubusercontent.com/Igor-Nersisyan/supabase-installer/main/install-supabase.sh -O install-supabase-new.sh
-# Review changes before using
-```
+# Restart all services
+docker compose down && docker compose up -d
 
-## 🏗️ Architecture
+# Restart only functions (faster)
+docker compose restart functions
+Checking 10GB Upload Support
 
-```
-Internet
-    ↓
-Nginx (SSL/443)
-    ↓
-Kong Gateway (8000)
-    ├── /auth → GoTrue (9999)
-    ├── /rest → PostgREST (3000)
-    ├── /realtime → Realtime (4000)
-    ├── /storage → Storage (5000)
-    ├── /functions → Edge Functions (3001)
-    └── /studio → Studio (3002)
-         ↓
-PostgreSQL (5432)
-    └── Pooler (6543)
-```
+You can verify the configuration works by checking the container environment:
 
-## 💡 Tips & Best Practices
+code
+Bash
+download
+content_copy
+expand_less
+docker exec supabase-storage printenv | grep LIMIT
+# Should show:
+# FILE_SIZE_LIMIT=10737418240
+# UPLOAD_FILE_SIZE_LIMIT=10737418240
+Configuration
 
-1. **Always backup before updates**
-2. **Monitor disk space** - logs and storage can grow
-3. **Use connection pooler** for production apps
-4. **Set up monitoring** - use `/status` endpoint
-5. **Configure email** - edit SMTP settings in `.env`
-6. **Secure your database** - run hardening script
-7. **Test Edge Functions** locally before deploying
+Edit /opt/supabase-project/.env to change:
 
-## 🤝 Contributing
+SMTP Settings (emails)
 
-Found issues or have improvements? Please open an issue or submit a PR!
+Webhook URLs
 
-## 📄 License
+JWT Secrets
 
-MIT License - free to use in any project
+📊 Resource Usage
 
-## ⭐ Support
+Typical consumption after optimization:
 
-If this installer saved you hours of debugging, consider giving it a star on GitHub!
+Total RAM: ~2.5 - 3.0 GB
 
----
+Disk: ~2 GB (base installation)
 
-**Note**: This is an independent project, not officially affiliated with Supabase Inc.
+🐛 Troubleshooting
+
+"Realtime health check returns 404"
+This is normal. The health endpoint might be hidden, but WebSocket connections will work. Test with a real client.
+
+"Edge Functions timeout after 60s"
+This installer sets timeouts to 300s. If you see timeouts, check volumes/api/kong.yml.
+
+"Database connection failed from external IP"
+Check if you ran harden_supabase_db.sh. If so, add your IP using option 5.
+
+📄 License
+
+MIT
+
+code
+Code
+download
+content_copy
+expand_less
