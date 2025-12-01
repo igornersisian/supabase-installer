@@ -45,13 +45,13 @@ Run as root:
 
 ```bash
 # Download installer
-wget https://raw.githubusercontent.com/Igor-Nersisyan/supabase-installer/main/install.sh
+wget https://raw.githubusercontent.com/Igor-Nersisyan/supabase-installer/main/install-supabase.sh
 
 # Make executable
-chmod +x install.sh
+chmod +x install-supabase.sh
 
-# Run
-./install.sh
+# Run as root
+sudo ./install-supabase.sh
 ```
 
 You'll be prompted for:
