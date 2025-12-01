@@ -1702,7 +1702,7 @@ case $OPTION in
         echo -e "  Host:     ${GREEN}${SERVER_IP}${NC}"
         echo -e "  Port:     ${GREEN}5432${NC}"
         echo -e "  Database: ${GREEN}postgres${NC}"
-        echo -e "  User:     ${GREEN}postgres${NC}"
+        echo -e "  User:     ${GREEN}postgres.postgres${NC}"
         echo -e "  Password: ${GREEN}<from /root/supabase-credentials.txt>${NC}"
         echo -e "  SSL:      ${GREEN}Disable${NC}"
         echo ""
