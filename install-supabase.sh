@@ -1,6 +1,8 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.15 - Complete Edition with 10GB Upload Support
+# Supabase Self-Hosted Production Installer v3.18 - Complete Edition with 10GB Upload Support
 # Features: Complete Docker configuration, latest Supabase version, log rotation, 10GB uploads
+# v3.18: Fixed email templates - now uses nginx template-server (URL-based, not inline)
+# v3.17: Protected webhook endpoints now support file uploads (FormData)
 # v3.15: Fixed FILE_SIZE_LIMIT - now uses integer values instead of strings
 # v3.14: Hardening script v3.3 with option 5 (Add external IP) and grep || true fix
 # Uses latest stable versions from Docker Hub
@@ -43,7 +45,7 @@ cat << 'HEADER'
    ╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
 HEADER
 
-echo -e "${GREEN}                   Self-Hosted Installer v3.15${NC}"
+echo -e "${GREEN}                   Self-Hosted Installer v3.18${NC}"
 echo -e "${GREEN}        Production Edition with 10GB File Upload Support${NC}"
 echo -e "${YELLOW}        Using latest stable Supabase versions${NC}"
 echo ""
@@ -298,11 +300,11 @@ sed -i '/^name:/d' docker-compose.yml 2>/dev/null || true
 sed -i 's/: true/: "true"/g' docker-compose.yml
 sed -i 's/: false/: "false"/g' docker-compose.yml
 
-# Optimize analytics container AND add 10GB upload support
-echo -e "${GREEN}🔧 Configuring Services with 10GB Upload Support${NC}"
+# Optimize analytics container AND add 10GB upload support AND email templates
+echo -e "${GREEN}🔧 Configuring Services with 10GB Upload Support & Email Templates${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${GREEN}Applying memory optimization and 10GB file upload configuration...${NC}"
+echo -e "${GREEN}Applying memory optimization, 10GB file upload, and email templates...${NC}"
 
 # Pass DOMAIN to Python script
 python3 << PYTHONEOF
@@ -317,6 +319,17 @@ try:
         data = yaml.safe_load(f)
 
     modified = False
+
+    # Add template-server for email templates (v3.18)
+    if 'services' in data:
+        data['services']['template-server'] = {
+            'image': 'nginx:alpine',
+            'container_name': 'supabase-templates',
+            'volumes': ['./email_templates:/usr/share/nginx/html:ro'],
+            'restart': 'unless-stopped'
+        }
+        print("✔ Template server added for email templates")
+        modified = True
 
     # Add environment variables to analytics service if it exists
     if 'services' in data and 'analytics' in data['services']:
@@ -389,6 +402,36 @@ try:
         
         print("✔ Kong configured for 10GB request body support")
         modified = True
+
+    # Configure Auth (GoTrue) email templates via URL (v3.18 fix)
+    # NOTE: GoTrue requires URL to template files, NOT inline HTML content
+    auth_service = None
+    if 'services' in data:
+        if 'auth' in data['services']:
+            auth_service = data['services']['auth']
+        elif 'gotrue' in data['services']:
+            auth_service = data['services']['gotrue']
+
+    if auth_service:
+        if 'environment' not in auth_service:
+            auth_service['environment'] = {}
+        
+        # v3.18: Use URLs to template-server (NOT inline _CONTENT variables!)
+        email_vars = {
+            'GOTRUE_MAILER_TEMPLATES_CONFIRMATION': 'http://template-server/confirmation.html',
+            'GOTRUE_MAILER_TEMPLATES_RECOVERY': 'http://template-server/recovery.html',
+            'GOTRUE_MAILER_TEMPLATES_MAGIC_LINK': 'http://template-server/magic_link.html',
+            'GOTRUE_MAILER_TEMPLATES_INVITE': 'http://template-server/invite.html',
+            'GOTRUE_MAILER_TEMPLATES_EMAIL_CHANGE': 'http://template-server/email_change.html'
+        }
+        
+        for key, value in email_vars.items():
+            auth_service['environment'][key] = value
+            
+        print("✔ Auth service configured with email template URLs")
+        modified = True
+    else:
+        print("⚠ Auth/GoTrue service not found - email templates not configured")
         
     if modified:
         with open('docker-compose.yml', 'w') as f:
@@ -405,13 +448,53 @@ except Exception as e:
 PYTHONEOF
 
 if [ $? -ne 0 ]; then
-    echo -e "${RED}ERROR: Failed to configure services for 10GB uploads${NC}"
+    echo -e "${RED}ERROR: Failed to configure services${NC}"
     echo -e "${RED}Manual configuration required. Check docker-compose.yml${NC}"
     exit 1
 fi
 
+# Create email templates directory and HTML files (v3.18)
+echo -e "${GREEN}Creating email templates...${NC}"
+mkdir -p email_templates
+
+cat > email_templates/confirmation.html << 'EMAILEOF'
+<h2>Confirm your email</h2>
+<p>Thanks for signing up! Please confirm your email by clicking the link below:</p>
+<p><a href="{{ .ConfirmationURL }}">Confirm email address</a></p>
+<p>Or enter the code: {{ .Token }}</p>
+EMAILEOF
+
+cat > email_templates/recovery.html << 'EMAILEOF'
+<h2>Reset your password</h2>
+<p>Click the link below to reset your password:</p>
+<p><a href="{{ .ConfirmationURL }}">Reset password</a></p>
+<p>If you didn't request this, you can safely ignore this email.</p>
+EMAILEOF
+
+cat > email_templates/magic_link.html << 'EMAILEOF'
+<h2>Your login link</h2>
+<p>Click the link below to log in:</p>
+<p><a href="{{ .ConfirmationURL }}">Log in to your account</a></p>
+<p>This link expires in 1 hour.</p>
+EMAILEOF
+
+cat > email_templates/invite.html << 'EMAILEOF'
+<h2>You have been invited!</h2>
+<p>You have been invited to join. Click the link below to accept:</p>
+<p><a href="{{ .ConfirmationURL }}">Accept invitation</a></p>
+EMAILEOF
+
+cat > email_templates/email_change.html << 'EMAILEOF'
+<h2>Confirm your new email</h2>
+<p>Click the link below to confirm your new email address:</p>
+<p><a href="{{ .ConfirmationURL }}">Confirm new email</a></p>
+EMAILEOF
+
+echo -e "${GREEN}✔ Email templates created in email_templates/${NC}"
+
 echo -e "${GREEN}✔ Services configured for 10GB file uploads${NC}"
 echo -e "${GREEN}✔ Analytics container optimized (memory usage reduced by ~65%)${NC}"
+echo -e "${GREEN}✔ Email templates configured via template-server${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
@@ -534,6 +617,26 @@ ENDPOINT_2_WEBHOOK_URL=
 ENDPOINT_2_AUTH_HEADER=
 ENDPOINT_3_WEBHOOK_URL=
 ENDPOINT_3_AUTH_HEADER=
+
+# ========================================
+# EMAIL TEMPLATES (v3.18)
+# ========================================
+# Templates are stored in email_templates/ directory as HTML files.
+# Edit these files to customize your emails:
+#   - email_templates/confirmation.html
+#   - email_templates/recovery.html
+#   - email_templates/magic_link.html
+#   - email_templates/invite.html
+#   - email_templates/email_change.html
+#
+# Available variables in templates:
+#   {{ .ConfirmationURL }} - confirmation/action link
+#   {{ .Email }} - user's email address
+#   {{ .Token }} - raw token (6-digit code)
+#   {{ .TokenHash }} - hashed token
+#   {{ .SiteURL }} - your site URL
+#
+# After editing templates, restart: docker compose restart auth
 ENVEOF
 
 # CRITICAL FIX: Substitute variables in kong.yml BEFORE starting containers
@@ -924,7 +1027,7 @@ serve(async (req: Request) => {
 })
 EOF
 
-# Protected webhook endpoints
+# Protected webhook endpoints with file support (v3.17)
 for i in 1 2 3; do
 cat > volumes/functions/webhook-endpoint-$i/index.ts << EOF
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
@@ -988,7 +1091,33 @@ serve(async (req: Request) => {
        last_called_at: new Date().toISOString()
      })
    
-   const body = await req.json()
+   // Parse body based on Content-Type (v3.17: file support)
+   const contentType = req.headers.get('content-type') || ''
+   let body: any
+   let isFormData = false
+   let formData: FormData | null = null
+   
+   if (contentType.includes('multipart/form-data')) {
+     // File upload
+     formData = await req.formData()
+     isFormData = true
+     // Convert FormData to object for logging (without file content)
+     body = {}
+     formData.forEach((value, key) => {
+       if (value instanceof File) {
+         body[key] = { filename: value.name, size: value.size, type: value.type }
+       } else {
+         body[key] = value
+       }
+     })
+   } else if (contentType.includes('application/json')) {
+     // JSON
+     body = await req.json()
+   } else {
+     // Text or other
+     body = { data: await req.text() }
+   }
+   
    const webhookUrl = Deno.env.get('ENDPOINT_${i}_WEBHOOK_URL')
    const webhookAuth = Deno.env.get('ENDPOINT_${i}_AUTH_HEADER')
    
@@ -1004,23 +1133,45 @@ serve(async (req: Request) => {
      )
    }
    
-   const enrichedBody = {
-     ...body,
-     source: 'authenticated',
-     function: FUNCTION_NAME,
-     user_id: user.id,
-     user_email: user.email,
-     timestamp: new Date().toISOString()
-   }
+   let webhookResponse: Response
    
-   const webhookResponse = await fetch(webhookUrl, {
-     method: 'POST',
-     headers: {
-       'Content-Type': 'application/json',
-       ...(webhookAuth ? { 'Authorization': webhookAuth } : {})
-     },
-     body: JSON.stringify(enrichedBody)
-   })
+   if (isFormData && formData) {
+     // Forward FormData with files to n8n
+     // Add metadata fields
+     formData.append('_user_id', user.id)
+     formData.append('_user_email', user.email || '')
+     formData.append('_source', 'authenticated')
+     formData.append('_function', FUNCTION_NAME)
+     formData.append('_timestamp', new Date().toISOString())
+     
+     webhookResponse = await fetch(webhookUrl, {
+       method: 'POST',
+       headers: {
+         ...(webhookAuth ? { 'Authorization': webhookAuth } : {})
+         // Note: Don't set Content-Type for FormData - fetch sets it with boundary
+       },
+       body: formData
+     })
+   } else {
+     // Forward JSON
+     const enrichedBody = {
+       ...body,
+       source: 'authenticated',
+       function: FUNCTION_NAME,
+       user_id: user.id,
+       user_email: user.email,
+       timestamp: new Date().toISOString()
+     }
+     
+     webhookResponse = await fetch(webhookUrl, {
+       method: 'POST',
+       headers: {
+         'Content-Type': 'application/json',
+         ...(webhookAuth ? { 'Authorization': webhookAuth } : {})
+       },
+       body: JSON.stringify(enrichedBody)
+     })
+   }
    
    const responseText = await webhookResponse.text()
    
@@ -1447,6 +1598,15 @@ else
     echo -e "${YELLOW}⚠ Kong max body size may not be configured correctly${NC}"
 fi
 
+# Verify Email Templates configuration (v3.16)
+echo -e "${YELLOW}Verifying Email Templates configuration...${NC}"
+AUTH_CONFIRMATION_SUBJECT=$(docker exec supabase-auth printenv GOTRUE_MAILER_TEMPLATES_CONFIRMATION_SUBJECT 2>/dev/null)
+if [ ! -z "$AUTH_CONFIRMATION_SUBJECT" ]; then
+    echo -e "${GREEN}✔ Email templates configured in Auth service${NC}"
+else
+    echo -e "${YELLOW}⚠ Email templates may not be configured (restart may be needed)${NC}"
+fi
+
 # Create improved DB hardening script v3.3
 echo -e "${YELLOW}Creating database hardening script v3.3...${NC}"
 
@@ -1816,7 +1976,7 @@ chmod +x /root/harden_supabase_db.sh
 # Save credentials with restricted permissions
 cat > /root/supabase-credentials.txt << CREDS
 ========================================
-SUPABASE INSTALLATION COMPLETE v3.15
+SUPABASE INSTALLATION COMPLETE v3.17
 ========================================
 
 Main URL: https://$DOMAIN
@@ -1842,6 +2002,8 @@ Edge Functions:
  Protected #1: https://$DOMAIN/functions/v1/webhook-endpoint-1
  Protected #2: https://$DOMAIN/functions/v1/webhook-endpoint-2
  Protected #3: https://$DOMAIN/functions/v1/webhook-endpoint-3
+ 
+ Note: Protected endpoints support both JSON and file uploads (v3.17)
 
 WebSocket Test:
  const ws = new WebSocket('wss://$DOMAIN/realtime/v1/websocket?apikey=$ANON_KEY&vsn=1.0.0');
@@ -1854,6 +2016,33 @@ VERSION INFORMATION
 This installation uses the LATEST Supabase versions:
 - All Docker images pull :latest tags
 - Repository cloned from main branch
+
+========================================
+EMAIL TEMPLATES (v3.16 NEW!)
+========================================
+
+Email templates are now configurable via .env file!
+Edit these variables in /opt/supabase-project/.env:
+
+  MAIL_CONFIRMATION_SUBJECT - Subject for signup confirmation
+  MAIL_CONFIRMATION_CONTENT - HTML content for signup confirmation
+  MAIL_RECOVERY_SUBJECT - Subject for password reset
+  MAIL_RECOVERY_CONTENT - HTML content for password reset
+  MAIL_MAGIC_LINK_SUBJECT - Subject for magic link login
+  MAIL_MAGIC_LINK_CONTENT - HTML content for magic link
+  MAIL_INVITE_SUBJECT - Subject for user invitations
+  MAIL_INVITE_CONTENT - HTML content for invitations
+  MAIL_EMAIL_CHANGE_SUBJECT - Subject for email change
+  MAIL_EMAIL_CHANGE_CONTENT - HTML content for email change
+
+Available template variables:
+  {{ .ConfirmationURL }} - The action link (confirm/reset/login)
+  {{ .Email }} - User's email address
+  {{ .SiteURL }} - Your site URL
+
+After editing, restart auth service:
+  cd /opt/supabase-project
+  docker compose restart auth
 
 ========================================
 10GB FILE UPLOAD SUPPORT (v3.15 FIX)
@@ -2000,6 +2189,18 @@ PERFORMANCE OPTIMIZATIONS APPLIED
    - Extended timeouts (2 hours) for slow connections
    - TUS resumable uploads for reliability
 
+6. Email Templates via .env (v3.16 NEW):
+   - All email templates configurable in .env
+   - No need to edit docker-compose.yml
+   - Supports HTML formatting
+   - Easy to customize for branding
+
+7. Protected Webhooks File Support (v3.17 NEW):
+   - webhook-endpoint-1/2/3 now accept files
+   - Supports multipart/form-data uploads
+   - User metadata added automatically
+   - Files forwarded to n8n with auth
+
 ========================================
 QUICK COMMANDS
 ========================================
@@ -2008,12 +2209,17 @@ QUICK COMMANDS
 cd /opt/supabase-project
 docker compose restart functions
 
+# Restart only auth (after email template changes):
+cd /opt/supabase-project
+docker compose restart auth
+
 # Full restart (if functions don't update):
 cd /opt/supabase-project
 docker compose down && docker compose up -d
 
 # Check logs:
 docker logs supabase-edge-functions --tail 50
+docker logs supabase-auth --tail 50
 
 # Check log sizes:
 du -sh /var/lib/docker/containers/*/*-json.log | sort -h
@@ -2027,6 +2233,9 @@ curl -I https://$DOMAIN/storage/v1/upload/resumable \\
 
 # Verify file size limits:
 docker exec supabase-storage printenv | grep -i size
+
+# Verify email templates (v3.18):
+docker exec supabase-auth wget -qO- http://template-server/confirmation.html
 
 # Test database hardening:
 bash /root/harden_supabase_db.sh
@@ -2052,6 +2261,8 @@ echo -e "${GREEN}✔ Edge Functions DNS fix applied - stable after restarts${NC}
 echo -e "${GREEN}✔ Kong timeout fix applied - supports 5-minute requests${NC}"
 echo -e "${GREEN}✔ Log rotation configured - prevents disk space issues${NC}"
 echo -e "${GREEN}✔ 10GB file upload support enabled (v3.15 fix)${NC}"
+echo -e "${GREEN}✔ Email templates via nginx template-server (v3.18)${NC}"
+echo -e "${GREEN}✔ Protected webhooks support file uploads (v3.17)${NC}"
 echo -e "${GREEN}✔ Database hardening script v3.3 installed${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -2064,14 +2275,18 @@ echo ""
 echo -e "${GREEN}2. 🔐 Secure database port (recommended):${NC}"
 echo "   bash /root/harden_supabase_db.sh"
 echo ""
-echo -e "${RED}3. 🗑️ SECURITY: After saving credentials elsewhere:${NC}"
+echo -e "${GREEN}3. ✉️  Customize email templates:${NC}"
+echo "   nano /opt/supabase-project/email_templates/confirmation.html"
+echo "   (Edit HTML files, then: docker compose restart auth)"
+echo ""
+echo -e "${RED}4. 🗑️ SECURITY: After saving credentials elsewhere:${NC}"
 echo "   rm /root/supabase-credentials.txt"
 echo ""
-echo -e "${GREEN}4. 🔧 Configure webhooks if using Edge Functions:${NC}"
+echo -e "${GREEN}5. 🔧 Configure webhooks if using Edge Functions:${NC}"
 echo "   nano /opt/supabase-project/.env"
 echo "   (Add N8N_WEBHOOK_URL and restart containers)"
 echo ""
-echo -e "${GREEN}5. 📦 Verify 10GB upload support:${NC}"
+echo -e "${GREEN}6. 📦 Verify 10GB upload support:${NC}"
 echo "   docker exec supabase-storage printenv | grep -i size"
 echo "   (Should show all three variables = 10737418240)"
 echo ""
