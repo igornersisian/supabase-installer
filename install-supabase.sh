@@ -1984,21 +1984,21 @@ case $OPTION in
         
         read -p "Enter IP to add: " NEW_IP
         
-        if ! [[ \$NEW_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        if ! [[ $NEW_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
             echo -e "${RED}Invalid IP format${NC}"
             exit 1
         fi
         
         # Check if already exists
-        if iptables -S DOCKER-USER 2>/dev/null | grep -q "\$NEW_IP"; then
-            echo -e "${YELLOW}IP \$NEW_IP is already whitelisted${NC}"
+        if iptables -S DOCKER-USER 2>/dev/null | grep -q "$NEW_IP"; then
+            echo -e "${YELLOW}IP $NEW_IP is already whitelisted${NC}"
             exit 0
         fi
         
-        iptables -I DOCKER-USER 2 -s \$NEW_IP -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
+        iptables -I DOCKER-USER 2 -s $NEW_IP -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
         save_rules
         
-        echo -e "${GREEN}✔ Added: \$NEW_IP${NC}"
+        echo -e "${GREEN}✔ Added: $NEW_IP${NC}"
         echo ""
         echo -e "${YELLOW}Current whitelist:${NC}"
         iptables -S DOCKER-USER 2>/dev/null | grep "ctorigdstport 5432" | grep -v DROP | grep -oP "(?<=-s )[0-9.]+" | grep -vE "^(127\.|172\.|10\.|192\.168\.)" || echo "  (none)"
