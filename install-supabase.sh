@@ -1,9 +1,9 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.18 - Complete Edition with 10GB Upload Support
+# Supabase Self-Hosted Production Installer v3.21 - Complete Edition with 10GB Upload Support
 # Features: Complete Docker configuration, latest Supabase version, log rotation, 10GB uploads
-# v3.18: Fixed email templates - now uses nginx template-server (URL-based, not inline)
-# v3.17: Protected webhook endpoints now support file uploads (FormData)
-# v3.15: Fixed FILE_SIZE_LIMIT - now uses integer values instead of strings
+# v3.21: Fixed streaming - direct body proxy instead of TransformStream (no early termination)
+# v3.20: Protected webhook endpoints now support streaming (SSE) responses
+# v3.19: Added Google OAuth configuration via .env
 # v3.14: Hardening script v3.3 with option 5 (Add external IP) and grep || true fix
 # Uses latest stable versions from Docker Hub
 set -euo pipefail
@@ -45,7 +45,7 @@ cat << 'HEADER'
    ╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
 HEADER
 
-echo -e "${GREEN}                   Self-Hosted Installer v3.18${NC}"
+echo -e "${GREEN}                   Self-Hosted Installer v3.21${NC}"
 echo -e "${GREEN}        Production Edition with 10GB File Upload Support${NC}"
 echo -e "${YELLOW}        Using latest stable Supabase versions${NC}"
 echo ""
@@ -427,8 +427,19 @@ try:
         
         for key, value in email_vars.items():
             auth_service['environment'][key] = value
+        
+        # v3.19: Google OAuth configuration from .env
+        google_vars = {
+            'GOTRUE_EXTERNAL_GOOGLE_ENABLED': '\${GOOGLE_ENABLED}',
+            'GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID': '\${GOOGLE_CLIENT_ID}',
+            'GOTRUE_EXTERNAL_GOOGLE_SECRET': '\${GOOGLE_SECRET}',
+            'GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI': '\${GOOGLE_REDIRECT_URI}'
+        }
+        
+        for key, value in google_vars.items():
+            auth_service['environment'][key] = value
             
-        print("✔ Auth service configured with email template URLs")
+        print("✔ Auth service configured with email templates & Google OAuth")
         modified = True
     else:
         print("⚠ Auth/GoTrue service not found - email templates not configured")
@@ -617,6 +628,20 @@ ENDPOINT_2_WEBHOOK_URL=
 ENDPOINT_2_AUTH_HEADER=
 ENDPOINT_3_WEBHOOK_URL=
 ENDPOINT_3_AUTH_HEADER=
+
+# ========================================
+# GOOGLE OAUTH (v3.19)
+# ========================================
+# Get credentials from Google Cloud Console:
+# 1. Go to APIs & Services -> Credentials
+# 2. Create OAuth 2.0 Client ID (Web application)
+# 3. Add authorized redirect URI: https://YOUR_DOMAIN/auth/v1/callback
+#
+# Leave GOOGLE_CLIENT_ID empty to disable Google auth
+GOOGLE_ENABLED=false
+GOOGLE_CLIENT_ID=
+GOOGLE_SECRET=
+GOOGLE_REDIRECT_URI=https://$DOMAIN/auth/v1/callback
 
 # ========================================
 # EMAIL TEMPLATES (v3.18)
@@ -1027,7 +1052,7 @@ serve(async (req: Request) => {
 })
 EOF
 
-# Protected webhook endpoints with file support (v3.17)
+# Protected webhook endpoints with file & streaming support (v3.21 - fixed)
 for i in 1 2 3; do
 cat > volumes/functions/webhook-endpoint-$i/index.ts << EOF
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
@@ -1091,6 +1116,10 @@ serve(async (req: Request) => {
        last_called_at: new Date().toISOString()
      })
    
+   // Check if streaming requested (v3.20)
+   const url = new URL(req.url)
+   const wantStream = url.searchParams.get('stream') === 'true'
+   
    // Parse body based on Content-Type (v3.17: file support)
    const contentType = req.headers.get('content-type') || ''
    let body: any
@@ -1143,6 +1172,7 @@ serve(async (req: Request) => {
      formData.append('_source', 'authenticated')
      formData.append('_function', FUNCTION_NAME)
      formData.append('_timestamp', new Date().toISOString())
+     if (wantStream) formData.append('_stream', 'true')
      
      webhookResponse = await fetch(webhookUrl, {
        method: 'POST',
@@ -1160,7 +1190,8 @@ serve(async (req: Request) => {
        function: FUNCTION_NAME,
        user_id: user.id,
        user_email: user.email,
-       timestamp: new Date().toISOString()
+       timestamp: new Date().toISOString(),
+       ...(wantStream ? { _stream: true } : {})
      }
      
      webhookResponse = await fetch(webhookUrl, {
@@ -1173,10 +1204,26 @@ serve(async (req: Request) => {
      })
    }
    
+   // v3.21: Handle streaming response - direct body proxy (fixed early termination)
+   const responseContentType = webhookResponse.headers.get('content-type') || ''
+   
+   // Streaming: просто проксируем body напрямую
+   if (wantStream && webhookResponse.body) {
+     return new Response(webhookResponse.body, {
+       headers: {
+         ...corsHeaders,
+         'Content-Type': responseContentType || 'text/event-stream',
+         'Cache-Control': 'no-cache'
+       },
+       status: webhookResponse.status
+     })
+   }
+   
+   // Regular response
    const responseText = await webhookResponse.text()
    
    return new Response(responseText, { 
-     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+     headers: { ...corsHeaders, 'Content-Type': responseContentType || 'application/json' },
      status: webhookResponse.status
    })
    
@@ -2189,17 +2236,18 @@ PERFORMANCE OPTIMIZATIONS APPLIED
    - Extended timeouts (2 hours) for slow connections
    - TUS resumable uploads for reliability
 
-6. Email Templates via .env (v3.16 NEW):
-   - All email templates configurable in .env
-   - No need to edit docker-compose.yml
-   - Supports HTML formatting
-   - Easy to customize for branding
+6. Email Templates via nginx (v3.18 FIX):
+   - Templates stored as HTML files
+   - Served via template-server container
+   - No more inline _CONTENT variables
+   - Easy to edit and customize
 
-7. Protected Webhooks File Support (v3.17 NEW):
-   - webhook-endpoint-1/2/3 now accept files
+7. Protected Webhooks with Streaming (v3.20):
+   - webhook-endpoint-1/2/3 accept files
    - Supports multipart/form-data uploads
    - User metadata added automatically
-   - Files forwarded to n8n with auth
+   - SSE streaming for AI agent responses
+   - Add ?stream=true for streaming mode
 
 ========================================
 QUICK COMMANDS
@@ -2237,6 +2285,9 @@ docker exec supabase-storage printenv | grep -i size
 # Verify email templates (v3.18):
 docker exec supabase-auth wget -qO- http://template-server/confirmation.html
 
+# Verify Google OAuth (v3.19):
+docker exec supabase-auth printenv | grep GOOGLE
+
 # Test database hardening:
 bash /root/harden_supabase_db.sh
 
@@ -2262,7 +2313,8 @@ echo -e "${GREEN}✔ Kong timeout fix applied - supports 5-minute requests${NC}"
 echo -e "${GREEN}✔ Log rotation configured - prevents disk space issues${NC}"
 echo -e "${GREEN}✔ 10GB file upload support enabled (v3.15 fix)${NC}"
 echo -e "${GREEN}✔ Email templates via nginx template-server (v3.18)${NC}"
-echo -e "${GREEN}✔ Protected webhooks support file uploads (v3.17)${NC}"
+echo -e "${GREEN}✔ Google OAuth ready to configure (v3.19)${NC}"
+echo -e "${GREEN}✔ Protected webhooks with streaming support (v3.21)${NC}"
 echo -e "${GREEN}✔ Database hardening script v3.3 installed${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -2279,14 +2331,19 @@ echo -e "${GREEN}3. ✉️  Customize email templates:${NC}"
 echo "   nano /opt/supabase-project/email_templates/confirmation.html"
 echo "   (Edit HTML files, then: docker compose restart auth)"
 echo ""
-echo -e "${RED}4. 🗑️ SECURITY: After saving credentials elsewhere:${NC}"
+echo -e "${GREEN}4. 🔑 Enable Google OAuth (optional):${NC}"
+echo "   nano /opt/supabase-project/.env"
+echo "   (Set GOOGLE_ENABLED=true, add CLIENT_ID & SECRET from Google Console)"
+echo "   docker compose restart auth"
+echo ""
+echo -e "${RED}5. 🗑️ SECURITY: After saving credentials elsewhere:${NC}"
 echo "   rm /root/supabase-credentials.txt"
 echo ""
-echo -e "${GREEN}5. 🔧 Configure webhooks if using Edge Functions:${NC}"
+echo -e "${GREEN}6. 🔧 Configure webhooks if using Edge Functions:${NC}"
 echo "   nano /opt/supabase-project/.env"
 echo "   (Add N8N_WEBHOOK_URL and restart containers)"
 echo ""
-echo -e "${GREEN}6. 📦 Verify 10GB upload support:${NC}"
+echo -e "${GREEN}7. 📦 Verify 10GB upload support:${NC}"
 echo "   docker exec supabase-storage printenv | grep -i size"
 echo "   (Should show all three variables = 10737418240)"
 echo ""
