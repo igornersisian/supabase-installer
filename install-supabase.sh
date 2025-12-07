@@ -1647,7 +1647,7 @@ fi
 
 # Verify Email Templates configuration (v3.16)
 echo -e "${YELLOW}Verifying Email Templates configuration...${NC}"
-AUTH_CONFIRMATION_SUBJECT=$(docker exec supabase-auth printenv GOTRUE_MAILER_TEMPLATES_CONFIRMATION_SUBJECT 2>/dev/null)
+AUTH_CONFIRMATION_SUBJECT=$(docker exec supabase-auth printenv GOTRUE_MAILER_TEMPLATES_CONFIRMATION_SUBJECT 2>/dev/null || true)
 if [ ! -z "$AUTH_CONFIRMATION_SUBJECT" ]; then
     echo -e "${GREEN}✔ Email templates configured in Auth service${NC}"
 else
