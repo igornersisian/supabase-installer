@@ -1,6 +1,7 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.21 - Complete Edition with 10GB Upload Support
+# Supabase Self-Hosted Production Installer v3.22 - Complete Edition with 10GB Upload Support
 # Features: Complete Docker configuration, latest Supabase version, log rotation, 10GB uploads
+# v3.22: Integrated TUS resumable upload fix (direct Storage bypass, no separate fix needed)
 # v3.21: Fixed streaming - direct body proxy instead of TransformStream (no early termination)
 # v3.20: Protected webhook endpoints now support streaming (SSE) responses
 # v3.19: Added Google OAuth configuration via .env
@@ -45,7 +46,7 @@ cat << 'HEADER'
    ╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
 HEADER
 
-echo -e "${GREEN}                   Self-Hosted Installer v3.21${NC}"
+echo -e "${GREEN}                   Self-Hosted Installer v3.22${NC}"
 echo -e "${GREEN}        Production Edition with 10GB File Upload Support${NC}"
 echo -e "${YELLOW}        Using latest stable Supabase versions${NC}"
 echo ""
@@ -300,11 +301,11 @@ sed -i '/^name:/d' docker-compose.yml 2>/dev/null || true
 sed -i 's/: true/: "true"/g' docker-compose.yml
 sed -i 's/: false/: "false"/g' docker-compose.yml
 
-# Optimize analytics container AND add 10GB upload support AND email templates
-echo -e "${GREEN}🔧 Configuring Services with 10GB Upload Support & Email Templates${NC}"
+# Optimize analytics container AND add 10GB upload support AND email templates AND TUS fix
+echo -e "${GREEN}🔧 Configuring Services with 10GB Upload Support, TUS Fix & Email Templates${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${GREEN}Applying memory optimization, 10GB file upload, and email templates...${NC}"
+echo -e "${GREEN}Applying memory optimization, 10GB file upload, TUS bypass, and email templates...${NC}"
 
 # Pass DOMAIN to Python script
 python3 << PYTHONEOF
@@ -356,13 +357,14 @@ try:
         print("✔ Analytics optimization variables added")
         modified = True
 
-    # Add 10GB upload support to storage service
+    # Add 10GB upload support + TUS fix to storage service
     # CRITICAL FIX v3.15: Use INTEGER values, not strings!
+    # v3.22: TUS_URL_PATH fixed to /upload/resumable (Storage adds /storage/v1 prefix internally)
     if 'services' in data and 'storage' in data['services']:
         if 'environment' not in data['services']['storage']:
             data['services']['storage']['environment'] = {}
         
-        # v3.15: All three size variables as integers (not strings!)
+        # v3.22: Fixed TUS_URL_PATH + added TUS_URL_SCHEME and TUS_URL_PORT
         storage_vars = {
             'FILE_SIZE_LIMIT': 10737418240,              # 10GB - MAIN VARIABLE (was missing!)
             'UPLOAD_FILE_SIZE_LIMIT': 10737418240,       # 10GB for TUS resumable uploads
@@ -370,18 +372,32 @@ try:
             'SERVER_KEEP_ALIVE_TIMEOUT': '7200',         # 2 hours
             'SERVER_HEADERS_TIMEOUT': '7200',            # 2 hours
             'UPLOAD_SIGNED_URL_EXPIRATION_TIME': '7200', # 2 hours
-            'TUS_URL_PATH': '/storage/v1/upload/resumable',
+            'TUS_URL_PATH': '/upload/resumable',         # v3.22 FIX: no /storage/v1 prefix!
             'TUS_URL_HOST': domain,
+            'TUS_URL_SCHEME': 'https',                   # v3.22: explicit scheme
+            'TUS_URL_PORT': '443',                       # v3.22: explicit port
             'STORAGE_BACKEND_URL': f'https://{domain}'
         }
         
         for key, value in storage_vars.items():
             data['services']['storage']['environment'][key] = value
         
+        # v3.22: Add port mapping for direct TUS access (bypassing Kong)
+        if 'ports' not in data['services']['storage']:
+            data['services']['storage']['ports'] = []
+        tus_port = '127.0.0.1:5000:5000'
+        existing_ports = [str(p) for p in data['services']['storage'].get('ports', [])]
+        if tus_port not in existing_ports:
+            data['services']['storage']['ports'].append(tus_port)
+        
         print(f"✔ Storage service configured for 10GB uploads with domain: {domain}")
         print(f"  FILE_SIZE_LIMIT: 10737418240 (integer)")
         print(f"  UPLOAD_FILE_SIZE_LIMIT: 10737418240 (integer)")
         print(f"  UPLOAD_FILE_SIZE_LIMIT_STANDARD: 10737418240 (integer)")
+        print(f"  TUS_URL_PATH: /upload/resumable (v3.22 fix)")
+        print(f"  TUS_URL_SCHEME: https (v3.22)")
+        print(f"  TUS_URL_PORT: 443 (v3.22)")
+        print(f"  Port 127.0.0.1:5000:5000 exposed for direct TUS access (v3.22)")
         modified = True
 
     # Add Kong configuration for large body size
@@ -504,6 +520,7 @@ EMAILEOF
 echo -e "${GREEN}✔ Email templates created in email_templates/${NC}"
 
 echo -e "${GREEN}✔ Services configured for 10GB file uploads${NC}"
+echo -e "${GREEN}✔ TUS resumable uploads configured (direct Storage bypass) (v3.22)${NC}"
 echo -e "${GREEN}✔ Analytics container optimized (memory usage reduced by ~65%)${NC}"
 echo -e "${GREEN}✔ Email templates configured via template-server${NC}"
 echo ""
@@ -613,8 +630,11 @@ REALTIME_MAX_EVENTS_PER_SECOND=100
 FUNCTIONS_VERIFY_JWT=true
 
 # Storage URL configuration for TUS (10GB uploads)
+# v3.22: Fixed TUS_URL_PATH (no /storage/v1 prefix - Storage adds it internally)
 TUS_URL_HOST=$DOMAIN
-TUS_URL_PATH=/storage/v1/upload/resumable
+TUS_URL_PATH=/upload/resumable
+TUS_URL_SCHEME=https
+TUS_URL_PORT=443
 STORAGE_BACKEND_URL=https://$DOMAIN
 
 # N8N Integration (public endpoint)
@@ -1373,7 +1393,7 @@ if [ ! -f "/etc/letsencrypt/ssl-dhparams.pem" ]; then
     openssl dhparam -out /etc/letsencrypt/ssl-dhparams.pem 2048 &> /dev/null
 fi
 
-# Final Nginx configuration with all optimizations and proper timeouts
+# Final Nginx configuration with all optimizations, proper timeouts, and TUS bypass
 cat > /etc/nginx/sites-available/$DOMAIN << 'NGINX'
 # Rate limiting zones
 limit_req_zone $binary_remote_addr zone=api:10m rate=50r/s;
@@ -1483,6 +1503,72 @@ server {
         
         limit_req zone=functions burst=100 nodelay;
     }
+    
+    # ========== TUS Resumable Uploads (bypass Kong -> direct to Storage:5000) ==========
+    # v3.22: TUS uploads go directly to Storage container, bypassing Kong
+    # This fixes issues with Kong interfering with TUS protocol headers
+    
+    # TUS: PATCH/HEAD requests (Storage returns Location without /storage/v1 prefix)
+    location ~ ^/upload/resumable {
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin "$http_origin" always;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type, Upload-Length, Upload-Offset, Tus-Resumable, Upload-Metadata, Upload-Defer-Length, Upload-Concat, x-upsert" always;
+            add_header Access-Control-Expose-Headers "Upload-Offset, Location, Upload-Length, Tus-Version, Tus-Resumable, Tus-Max-Size, Tus-Extension, Upload-Metadata" always;
+            add_header Access-Control-Max-Age 86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type text/plain;
+            return 204;
+        }
+
+        client_max_body_size 11G;
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_read_timeout 7200s;
+        proxy_send_timeout 7200s;
+        proxy_connect_timeout 10s;
+        proxy_request_buffering off;
+        proxy_buffering off;
+    }
+
+    # TUS: Initial POST (client sends to /storage/v1/upload/resumable)
+    location ~ ^/storage/v1/upload/resumable {
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin "$http_origin" always;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type, Upload-Length, Upload-Offset, Tus-Resumable, Upload-Metadata, Upload-Defer-Length, Upload-Concat, x-upsert" always;
+            add_header Access-Control-Expose-Headers "Upload-Offset, Location, Upload-Length, Tus-Version, Tus-Resumable, Tus-Max-Size, Tus-Extension, Upload-Metadata" always;
+            add_header Access-Control-Max-Age 86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type text/plain;
+            return 204;
+        }
+
+        rewrite ^/storage/v1/(.*) /$1 break;
+        client_max_body_size 11G;
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header X-Forwarded-Prefix /storage/v1/;
+        proxy_read_timeout 7200s;
+        proxy_send_timeout 7200s;
+        proxy_connect_timeout 10s;
+        proxy_request_buffering off;
+        proxy_buffering off;
+    }
+
+    # ========== End TUS Configuration ==========
     
     # Storage - longer timeouts for 10GB file uploads
     location ~ ^/storage/v1 {
@@ -1645,6 +1731,22 @@ else
     echo -e "${YELLOW}⚠ Kong max body size may not be configured correctly${NC}"
 fi
 
+# v3.22: Verify TUS configuration
+echo -e "${YELLOW}Verifying TUS configuration (v3.22)...${NC}"
+TUS_PATH=$(docker exec supabase-storage printenv TUS_URL_PATH 2>/dev/null)
+if [ "$TUS_PATH" = "/upload/resumable" ]; then
+    echo -e "${GREEN}✔ TUS_URL_PATH: /upload/resumable (correct)${NC}"
+else
+    echo -e "${RED}✗ TUS_URL_PATH: $TUS_PATH (expected /upload/resumable)${NC}"
+fi
+
+STORAGE_PORT=$(ss -tlnp | grep -c ":5000 " || true)
+if [ "$STORAGE_PORT" -gt 0 ]; then
+    echo -e "${GREEN}✔ Storage port 5000 listening (TUS direct access)${NC}"
+else
+    echo -e "${YELLOW}⚠ Storage port 5000 not yet listening (may need a moment)${NC}"
+fi
+
 # Verify Email Templates configuration (v3.16)
 echo -e "${YELLOW}Verifying Email Templates configuration...${NC}"
 AUTH_CONFIRMATION_SUBJECT=$(docker exec supabase-auth printenv GOTRUE_MAILER_TEMPLATES_CONFIRMATION_SUBJECT 2>/dev/null || true)
@@ -1731,62 +1833,38 @@ echo ""
 clean_iptables() {
     echo -e "${YELLOW}Cleaning existing firewall rules...${NC}"
     
-    # Method: Delete ALL rules containing "ctorigdstport 5432" or "dport 5432"
-    # We parse iptables -S output and delete matching rules
-    # This handles rules with or without --ctdir ORIGINAL
-    
-    # Get all rules in DOCKER-USER chain and delete those related to port 5432
     while true; do
-        # Find first rule with ctorigdstport 5432 or dport 5432
         RULE=$(iptables -S DOCKER-USER 2>/dev/null | grep -E "ctorigdstport 5432|dport 5432" | head -1 || true)
         if [ -z "$RULE" ]; then
             break
         fi
-        # Convert -A to -D for deletion
         DELETE_RULE=$(echo "$RULE" | sed 's/^-A /-D /')
         eval iptables $DELETE_RULE 2>/dev/null || break
     done
     
-    # Also remove ESTABLISHED,RELATED rule if it exists (we'll re-add it)
-    # Be careful: only remove OUR version (the global one without port specification)
     iptables -D DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
 }
 
 # Function to ensure docker-compose has port open on 0.0.0.0
 ensure_port_open() {
-    # Make backup
     cp "$COMPOSE_FILE" "$COMPOSE_FILE.backup.$(date +%Y%m%d_%H%M%S)"
     
-    # Ensure port is bound to 0.0.0.0 (not localhost)
-    # This is REQUIRED for both scenarios!
     sed -i 's/- "127.0.0.1:5432:5432"/- "5432:5432"/' "$COMPOSE_FILE"
     sed -i 's/- "0.0.0.0:5432:5432"/- "5432:5432"/' "$COMPOSE_FILE"
 }
 
 # Function to add base iptables rules
 add_base_rules() {
-    # Install iptables-persistent for saving rules
     echo -e "${YELLOW}Installing iptables-persistent...${NC}"
     DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent >/dev/null 2>&1 || true
     
-    # Rules are processed top to bottom
-    # We insert in REVERSE order because -I inserts at position 1
-    
-    # LAST: Drop everything else to port 5432
     iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j DROP
     
-    # Allow Docker networks (these MUST be allowed for container-to-container communication)
-    # Docker uses these ranges by design (from moby source code):
-    # - 172.17.0.0/16 through 172.31.0.0/16 (covered by 172.16.0.0/12)
-    # - 192.168.0.0/16 (Docker can also use this range!)
-    # - 10.0.0.0/8 (custom Docker networks)
-    # - 127.0.0.0/8 (localhost)
     iptables -I DOCKER-USER -s 192.168.0.0/16 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
     iptables -I DOCKER-USER -s 10.0.0.0/8 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
     iptables -I DOCKER-USER -s 172.16.0.0/12 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
     iptables -I DOCKER-USER -s 127.0.0.0/8 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
     
-    # FIRST: Allow established connections (critical for response packets)
     iptables -I DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 }
 
@@ -1826,10 +1904,8 @@ case $OPTION in
         ensure_port_open
         clean_iptables
         add_base_rules
-        # No external IPs added - only Docker networks can connect
         save_rules
         
-        # Restart Supabase
         echo -e "${YELLOW}Restarting Supabase...${NC}"
         cd "$SUPABASE_DIR"
         docker compose down db 2>/dev/null || docker-compose down db 2>/dev/null || true
@@ -1869,7 +1945,6 @@ case $OPTION in
         
         read -p "Enter n8n server IP: " N8N_IP
         
-        # Validate IP
         if ! [[ $N8N_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
             echo -e "${RED}Invalid IP format${NC}"
             exit 1
@@ -1879,13 +1954,11 @@ case $OPTION in
         clean_iptables
         add_base_rules
         
-        # Add external IP BEFORE the DROP rule (insert at position 2, after ESTABLISHED)
         iptables -I DOCKER-USER 2 -s $N8N_IP -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
         echo -e "  ${GREEN}✔${NC} Added: $N8N_IP"
         
         save_rules
         
-        # Restart Supabase
         echo -e "${YELLOW}Restarting Supabase...${NC}"
         cd "$SUPABASE_DIR"
         docker compose up -d 2>/dev/null || docker-compose up -d
@@ -1927,7 +2000,6 @@ case $OPTION in
         clean_iptables
         save_rules
         
-        # Restart
         cd "$SUPABASE_DIR"
         docker compose down db 2>/dev/null || docker-compose down db 2>/dev/null || true
         docker compose up -d 2>/dev/null || docker-compose up -d
@@ -1942,7 +2014,6 @@ case $OPTION in
         echo -e "${CYAN}Current Status:${NC}"
         echo ""
         
-        # Check docker-compose binding
         BINDING=$(grep -E "5432:5432" "$COMPOSE_FILE" | head -1 || echo "not found")
         echo -e "${YELLOW}Docker Compose binding:${NC}"
         echo "  $BINDING"
@@ -1951,17 +2022,14 @@ case $OPTION in
         fi
         echo ""
         
-        # Check iptables
         echo -e "${YELLOW}DOCKER-USER iptables rules:${NC}"
         iptables -L DOCKER-USER -n -v 2>/dev/null | head -15 || echo "  Unable to read"
         echo ""
         
-        # Check if port is actually listening
         echo -e "${YELLOW}Port 5432 listening:${NC}"
         ss -tuln | grep 5432 || echo "  Not listening"
         echo ""
         
-        # Test connectivity hint
         echo -e "${YELLOW}Quick test from another container:${NC}"
         echo "  docker run --rm --add-host=host.docker.internal:host-gateway postgres:15 \\"
         echo "    psql -h host.docker.internal -U postgres -c 'SELECT 1'"
@@ -1972,7 +2040,6 @@ case $OPTION in
         echo -e "${CYAN}Add External IP to Whitelist${NC}"
         echo ""
         
-        # Check if hardening is active
         if ! iptables -S DOCKER-USER 2>/dev/null | grep -q "ctorigdstport 5432"; then
             echo -e "${RED}Error: Hardening not active. Run option 1 or 2 first.${NC}"
             exit 1
@@ -1989,7 +2056,6 @@ case $OPTION in
             exit 1
         fi
         
-        # Check if already exists
         if iptables -S DOCKER-USER 2>/dev/null | grep -q "$NEW_IP"; then
             echo -e "${YELLOW}IP $NEW_IP is already whitelisted${NC}"
             exit 0
@@ -2023,7 +2089,7 @@ chmod +x /root/harden_supabase_db.sh
 # Save credentials with restricted permissions
 cat > /root/supabase-credentials.txt << CREDS
 ========================================
-SUPABASE INSTALLATION COMPLETE v3.17
+SUPABASE INSTALLATION COMPLETE v3.22
 ========================================
 
 Main URL: https://$DOMAIN
@@ -2065,26 +2131,21 @@ This installation uses the LATEST Supabase versions:
 - Repository cloned from main branch
 
 ========================================
-EMAIL TEMPLATES (v3.16 NEW!)
+EMAIL TEMPLATES (v3.18)
 ========================================
 
-Email templates are now configurable via .env file!
-Edit these variables in /opt/supabase-project/.env:
-
-  MAIL_CONFIRMATION_SUBJECT - Subject for signup confirmation
-  MAIL_CONFIRMATION_CONTENT - HTML content for signup confirmation
-  MAIL_RECOVERY_SUBJECT - Subject for password reset
-  MAIL_RECOVERY_CONTENT - HTML content for password reset
-  MAIL_MAGIC_LINK_SUBJECT - Subject for magic link login
-  MAIL_MAGIC_LINK_CONTENT - HTML content for magic link
-  MAIL_INVITE_SUBJECT - Subject for user invitations
-  MAIL_INVITE_CONTENT - HTML content for invitations
-  MAIL_EMAIL_CHANGE_SUBJECT - Subject for email change
-  MAIL_EMAIL_CHANGE_CONTENT - HTML content for email change
+Email templates are stored as HTML files in /opt/supabase-project/email_templates/
+Edit these files to customize your emails:
+  - email_templates/confirmation.html
+  - email_templates/recovery.html
+  - email_templates/magic_link.html
+  - email_templates/invite.html
+  - email_templates/email_change.html
 
 Available template variables:
   {{ .ConfirmationURL }} - The action link (confirm/reset/login)
   {{ .Email }} - User's email address
+  {{ .Token }} - Raw token (6-digit code)
   {{ .SiteURL }} - Your site URL
 
 After editing, restart auth service:
@@ -2092,15 +2153,23 @@ After editing, restart auth service:
   docker compose restart auth
 
 ========================================
-10GB FILE UPLOAD SUPPORT (v3.15 FIX)
+10GB FILE UPLOAD + TUS FIX (v3.22)
 ========================================
 
 ✅ FILE_SIZE_LIMIT: 10737418240 (10GB)
 ✅ UPLOAD_FILE_SIZE_LIMIT: 10737418240 (10GB)
 ✅ UPLOAD_FILE_SIZE_LIMIT_STANDARD: 10737418240 (10GB)
+✅ TUS_URL_PATH: /upload/resumable (v3.22 fix)
+✅ TUS_URL_SCHEME: https (v3.22)
+✅ TUS_URL_PORT: 443 (v3.22)
+✅ Storage port 5000 exposed for direct TUS access (v3.22)
+✅ Nginx TUS locations bypass Kong (v3.22)
 
-v3.15 FIX: All three variables now set as INTEGER values
-(previous versions incorrectly used string values or missing FILE_SIZE_LIMIT)
+v3.22 FIX: TUS resumable uploads now work out of the box!
+- Storage container exposed on localhost:5000
+- Nginx routes TUS requests directly to Storage (bypassing Kong)
+- TUS_URL_PATH corrected to /upload/resumable (no /storage/v1 prefix)
+- No separate TUS fix script needed
 
 JavaScript SDK Example (resumable upload):
  const { data, error } = await supabase.storage
@@ -2121,7 +2190,7 @@ Note: Supabase Studio UI file upload is limited to 6MB
 (architectural limitation of self-hosted version)
 
 Verify configuration:
- docker exec supabase-storage printenv | grep -i size
+ docker exec supabase-storage printenv | grep -iE "size|tus"
 
 ========================================
 DOCKER DAEMON CONFIGURATION
@@ -2242,12 +2311,20 @@ PERFORMANCE OPTIMIZATIONS APPLIED
    - No more inline _CONTENT variables
    - Easy to edit and customize
 
-7. Protected Webhooks with Streaming (v3.20):
+7. Protected Webhooks with Streaming (v3.21):
    - webhook-endpoint-1/2/3 accept files
    - Supports multipart/form-data uploads
    - User metadata added automatically
    - SSE streaming for AI agent responses
    - Add ?stream=true for streaming mode
+
+8. TUS Resumable Upload Fix (v3.22):
+   - Storage container exposed on port 5000
+   - Nginx routes TUS requests directly to Storage (bypasses Kong)
+   - TUS_URL_PATH fixed to /upload/resumable
+   - TUS_URL_SCHEME=https and TUS_URL_PORT=443 added
+   - CORS headers handled by Nginx for TUS endpoints
+   - No separate fix script needed anymore
 
 ========================================
 QUICK COMMANDS
@@ -2268,6 +2345,7 @@ docker compose down && docker compose up -d
 # Check logs:
 docker logs supabase-edge-functions --tail 50
 docker logs supabase-auth --tail 50
+docker logs supabase-storage --tail 50
 
 # Check log sizes:
 du -sh /var/lib/docker/containers/*/*-json.log | sort -h
@@ -2281,6 +2359,10 @@ curl -I https://$DOMAIN/storage/v1/upload/resumable \\
 
 # Verify file size limits:
 docker exec supabase-storage printenv | grep -i size
+
+# Verify TUS configuration (v3.22):
+docker exec supabase-storage printenv | grep -i tus
+ss -tlnp | grep 5000
 
 # Verify email templates (v3.18):
 docker exec supabase-auth wget -qO- http://template-server/confirmation.html
@@ -2312,6 +2394,7 @@ echo -e "${GREEN}✔ Edge Functions DNS fix applied - stable after restarts${NC}
 echo -e "${GREEN}✔ Kong timeout fix applied - supports 5-minute requests${NC}"
 echo -e "${GREEN}✔ Log rotation configured - prevents disk space issues${NC}"
 echo -e "${GREEN}✔ 10GB file upload support enabled (v3.15 fix)${NC}"
+echo -e "${GREEN}✔ TUS resumable uploads integrated (v3.22 - no separate fix needed)${NC}"
 echo -e "${GREEN}✔ Email templates via nginx template-server (v3.18)${NC}"
 echo -e "${GREEN}✔ Google OAuth ready to configure (v3.19)${NC}"
 echo -e "${GREEN}✔ Protected webhooks with streaming support (v3.21)${NC}"
@@ -2343,9 +2426,10 @@ echo -e "${GREEN}6. 🔧 Configure webhooks if using Edge Functions:${NC}"
 echo "   nano /opt/supabase-project/.env"
 echo "   (Add N8N_WEBHOOK_URL and restart containers)"
 echo ""
-echo -e "${GREEN}7. 📦 Verify 10GB upload support:${NC}"
-echo "   docker exec supabase-storage printenv | grep -i size"
-echo "   (Should show all three variables = 10737418240)"
+echo -e "${GREEN}7. 📦 Verify 10GB upload + TUS support:${NC}"
+echo "   docker exec supabase-storage printenv | grep -iE 'size|tus'"
+echo "   ss -tlnp | grep 5000"
+echo "   (Should show all size variables = 10737418240 and port 5000 listening)"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
