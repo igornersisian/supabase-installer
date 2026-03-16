@@ -1,6 +1,9 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.22 - Complete Edition with 10GB Upload Support
+# Supabase Self-Hosted Production Installer v3.25 - Complete Edition with 10GB Upload Support
 # Features: Complete Docker configuration, latest Supabase version, log rotation, 10GB uploads
+# v3.25: Fixed Kong timeout injection - replaced PyYAML (corrupted kong.yml) with pure sed
+# v3.24: Added --deploy-hook to initial certbot certonly (saved to renewal conf for systemd timer)
+# v3.23: Added certbot renewal cron job with nginx reload deploy-hook for SSL auto-renewal
 # v3.22: Integrated TUS resumable upload fix (direct Storage bypass, no separate fix needed)
 # v3.21: Fixed streaming - direct body proxy instead of TransformStream (no early termination)
 # v3.20: Protected webhook endpoints now support streaming (SSE) responses
@@ -46,7 +49,7 @@ cat << 'HEADER'
    ╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
 HEADER
 
-echo -e "${GREEN}                   Self-Hosted Installer v3.22${NC}"
+echo -e "${GREEN}                   Self-Hosted Installer v3.25${NC}"
 echo -e "${GREEN}        Production Edition with 10GB File Upload Support${NC}"
 echo -e "${YELLOW}        Using latest stable Supabase versions${NC}"
 echo ""
@@ -700,59 +703,18 @@ fi
 
 echo -e "${GREEN}✔ Kong configuration variables substituted successfully${NC}"
 
-# Remove any problematic timeout lines from kong.yml (check all indentation levels)
-echo -e "${YELLOW}Cleaning Kong configuration...${NC}"
-# Remove standalone timeout lines that might conflict (at any indentation level)
-sed -i '/^\s*connect_timeout: 300000$/d' volumes/api/kong.yml
-sed -i '/^\s*write_timeout: 300000$/d' volumes/api/kong.yml
-sed -i '/^\s*read_timeout: 300000$/d' volumes/api/kong.yml
-
-# Add Kong timeouts to prevent 60-second cutoff - properly within service definition
+# v3.25: Add Kong timeouts using pure sed (PyYAML was corrupting kong.yml formatting)
 echo -e "${YELLOW}Configuring Kong timeouts for long-running functions...${NC}"
 
-python3 << 'PYTHONEOF'
-import yaml
-import sys
-
-try:
-    with open('volumes/api/kong.yml', 'r') as f:
-        data = yaml.safe_load(f)
-
-    # Find and update functions service
-    modified = False
-    if 'services' in data:
-        for service in data['services']:
-            if service.get('name') == 'functions-v1':
-                service['connect_timeout'] = 300000
-                service['write_timeout'] = 300000
-                service['read_timeout'] = 300000
-                print("✔ Added 300-second timeouts to functions-v1 service")
-                modified = True
-                break
-
-    if modified:
-        with open('volumes/api/kong.yml', 'w') as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-        sys.exit(0)
-    else:
-        print("⚠ functions-v1 service not found in kong.yml")
-        sys.exit(1)
-        
-except Exception as e:
-    print(f"⚠ Could not modify kong.yml: {e}")
-    sys.exit(1)
-PYTHONEOF
-
-if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}Python method failed, using sed to add timeouts...${NC}"
-    # More robust sed command
-    if grep -q "name: functions-v1" volumes/api/kong.yml; then
-        sed -i '/name: functions-v1$/a\  connect_timeout: 300000\n  write_timeout: 300000\n  read_timeout: 300000' volumes/api/kong.yml
-        echo -e "${GREEN}✔ Kong timeouts added via sed${NC}"
-    else
-        echo -e "${RED}WARNING: Could not find functions-v1 service in kong.yml${NC}"
-        echo -e "${YELLOW}Edge Functions may timeout after 60 seconds${NC}"
-    fi
+if grep -q "name: functions-v1" volumes/api/kong.yml; then
+    # Remove original read_timeout: 150000 from functions-v1 to avoid duplicates
+    sed -i '/url: http:\/\/functions:9000\//{ n; /read_timeout: 150000/d }' volumes/api/kong.yml
+    # Insert 300-second timeouts after the functions URL line (4-space indent to match YAML)
+    sed -i '/url: http:\/\/functions:9000\//a\    connect_timeout: 300000\n    write_timeout: 300000\n    read_timeout: 300000' volumes/api/kong.yml
+    echo -e "${GREEN}✔ Kong timeouts added (300s) for functions-v1 service${NC}"
+else
+    echo -e "${RED}WARNING: Could not find functions-v1 service in kong.yml${NC}"
+    echo -e "${YELLOW}Edge Functions may timeout after 60 seconds${NC}"
 fi
 
 echo -e "${GREEN}✔ Kong timeouts configured for 5-minute requests${NC}"
@@ -1361,7 +1323,7 @@ echo -e "${GREEN}Domain: ${YELLOW}$DOMAIN${NC}"
 echo -e "${GREEN}Email:  ${YELLOW}$EMAIL${NC}"
 echo ""
 
-if ! certbot certonly --webroot -w "/var/www/$DOMAIN" -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL"; then
+if ! certbot certonly --webroot -w "/var/www/$DOMAIN" -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" --deploy-hook "systemctl reload nginx"; then
     echo -e "${RED}✗ Certbot failed. Installation cannot continue without SSL.${NC}"
     echo -e "${RED}  Please check that your DNS A record for '$DOMAIN' points to this server's IP.${NC}"
     echo -e "${RED}  Server IP: $(curl -s ifconfig.me)${NC}"
@@ -1756,6 +1718,25 @@ else
     echo -e "${YELLOW}⚠ Email templates may not be configured (restart may be needed)${NC}"
 fi
 
+# v3.23: Configure automatic SSL certificate renewal with nginx reload
+echo -e "${GREEN}⏰ Configuring Automatic SSL Certificate Renewal${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+CRON_CERT_RENEW_JOB="0 2 * * * certbot renew --quiet --deploy-hook 'systemctl reload nginx' >> /var/log/certbot-renew.log 2>&1"
+
+CRON_TEMP=$(mktemp /tmp/cron.XXXXXX)
+(crontab -l 2>/dev/null | grep -v "certbot") > "$CRON_TEMP" || true
+echo "$CRON_CERT_RENEW_JOB" >> "$CRON_TEMP"
+crontab "$CRON_TEMP"
+rm -f "$CRON_TEMP"
+
+echo -e "${GREEN}✔ Cron job configured: SSL renewal check daily at 2 AM${NC}"
+echo -e "${GREEN}  Nginx will automatically reload after certificate renewal${NC}"
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
 # Create improved DB hardening script v3.3
 echo -e "${YELLOW}Creating database hardening script v3.3...${NC}"
 
@@ -2089,7 +2070,7 @@ chmod +x /root/harden_supabase_db.sh
 # Save credentials with restricted permissions
 cat > /root/supabase-credentials.txt << CREDS
 ========================================
-SUPABASE INSTALLATION COMPLETE v3.22
+SUPABASE INSTALLATION COMPLETE v3.25
 ========================================
 
 Main URL: https://$DOMAIN
@@ -2204,6 +2185,20 @@ Docker daemon configured with:
 ✅ Standard Docker subnet (172.17.0.1/16)
 
 This configuration is compatible with n8n and other services.
+
+========================================
+SSL AUTO-RENEWAL (v3.24)
+========================================
+
+✅ --deploy-hook saved in /etc/letsencrypt/renewal/ config (v3.24)
+✅ Ubuntu systemd timer (certbot.timer) will reload nginx automatically
+✅ Cron job configured as fallback: daily at 2 AM
+✅ Log file: /var/log/certbot-renew.log
+
+Verify cron: crontab -l | grep certbot
+Verify deploy-hook: grep deploy /etc/letsencrypt/renewal/$DOMAIN.conf
+Manual renewal: certbot renew --force-renewal
+Check logs: cat /var/log/certbot-renew.log
 
 ========================================
 DATABASE HARDENING v3.3
@@ -2326,6 +2321,12 @@ PERFORMANCE OPTIMIZATIONS APPLIED
    - CORS headers handled by Nginx for TUS endpoints
    - No separate fix script needed anymore
 
+9. SSL Auto-Renewal (v3.24):
+   - --deploy-hook saved in certbot renewal config at first cert generation
+   - Ubuntu systemd timer (certbot.timer) uses saved hook automatically
+   - Cron job as fallback with nginx reload deploy-hook
+   - Logs to /var/log/certbot-renew.log
+
 ========================================
 QUICK COMMANDS
 ========================================
@@ -2370,6 +2371,11 @@ docker exec supabase-auth wget -qO- http://template-server/confirmation.html
 # Verify Google OAuth (v3.19):
 docker exec supabase-auth printenv | grep GOOGLE
 
+# Verify SSL auto-renewal (v3.24):
+crontab -l | grep certbot
+grep deploy /etc/letsencrypt/renewal/*.conf
+cat /var/log/certbot-renew.log
+
 # Test database hardening:
 bash /root/harden_supabase_db.sh
 
@@ -2399,6 +2405,7 @@ echo -e "${GREEN}✔ Email templates via nginx template-server (v3.18)${NC}"
 echo -e "${GREEN}✔ Google OAuth ready to configure (v3.19)${NC}"
 echo -e "${GREEN}✔ Protected webhooks with streaming support (v3.21)${NC}"
 echo -e "${GREEN}✔ Database hardening script v3.3 installed${NC}"
+echo -e "${GREEN}✔ SSL auto-renewal configured with nginx reload (v3.24)${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${YELLOW}                     📋 NEXT STEPS${NC}"
@@ -2430,6 +2437,11 @@ echo -e "${GREEN}7. 📦 Verify 10GB upload + TUS support:${NC}"
 echo "   docker exec supabase-storage printenv | grep -iE 'size|tus'"
 echo "   ss -tlnp | grep 5000"
 echo "   (Should show all size variables = 10737418240 and port 5000 listening)"
+echo ""
+echo -e "${GREEN}8. 🔒 Verify SSL auto-renewal (v3.24):${NC}"
+echo "   crontab -l | grep certbot"
+echo "   grep deploy /etc/letsencrypt/renewal/$DOMAIN.conf"
+echo "   (Should show deploy-hook with nginx reload)"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
