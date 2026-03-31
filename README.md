@@ -80,7 +80,7 @@ Run as root:
 
 ```bash
 # Download installer
-wget https://raw.githubusercontent.com/Igor-Nersisian/supabase-installer/main/install-supabase.sh
+wget https://raw.githubusercontent.com/igornersisian/supabase-installer/main/install-supabase.sh
 
 # Make executable
 chmod +x install-supabase.sh
